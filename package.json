@@ -1,0 +1,21 @@
+{
+  "name": "linkr-solver",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:single": "npm run build && node scripts/singlefile.mjs",
+    "preview": "vite preview",
+    "test": "node --experimental-strip-types e2e/solver.test.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

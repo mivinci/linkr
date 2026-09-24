@@ -1,0 +1,16 @@
+node_modules/
+dist/
+# build artifact, produced by `npm run build:single` and published by CI
+linkr-solver.html
+
+# e2e screenshots and captured downloads
+e2e/out*/
+e2e/smoke.log
+
+# python reference implementation
+python/out*/
+python/.venv/
+__pycache__/
+*.pyc
+
+.DS_Store
