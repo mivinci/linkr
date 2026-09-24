@@ -1,38 +1,58 @@
 # Linkr 求解器
 
-给 [Linkr](https://www.playlinkr.net/)（也就是数连 / Numberlink）的截图自动求解 —— 把图丢进去，识别点边结构，算出答案。
+A solver for [Linkr](https://www.playlinkr.net/), the daily linking game.
 
-在线：<https://le0.me/linkr/>
+Drop in a screenshot — it reads the board, works out the answer, and draws it.
 
-## 用法
+## Online
 
-把游戏截图拖进页面（或点「打开截图」），识别结果会叠在图上：黄圈是点、绿线是边、彩色圈是成对的端点。
+<https://le0.me/linkr/>
 
-- 识别有偏差就用「加点 / 删点边 / 连边 / 设颜色」修一下
-- 「求解」出答案；勾「顺便求唯一解」会再跑一遍穷举确认
-- 「算法演示」能把求解器**在这一道题上真实的生长过程**逐步放出来
-- 「导出图片」导出裁剪到棋盘范围的答案图；也可以用单文件版 <https://le0.me/linkr/linkr-solver.html>
+## Usage
 
-## 它是怎么解的
+1. Drag a screenshot into the page, or open one with the file button.
+2. The detected board is drawn over the image: rings are the points, lines are the
+   connections, and matching coloured pairs are the endpoints to join.
+3. If the detection is off, fix it with the editing tools — add a point, delete a
+   point or an edge, link two points, or set a colour.
+4. Press solve. Tick the uniqueness option to also check, by exhausting the search,
+   that no second answer exists.
+5. The algorithm demo replays how the solver actually grew the paths on this exact
+   board, one step at a time.
+6. Export the answer as an image (cropped to the board) or as JSON.
 
-所有颜色**同时**从各自的端点出发生长，每一步只扩展「当前可走分支最少」的那个头。每走一步做四道剪枝：端点独占、度数下限、可达性、连通块。第一轮没出解就**打乱颜色的编号**重来 —— 搜索树的形状几乎只受颜色编号顺序影响，跟顶点编号、走子顺序都没关系。
+## How it solves
 
-详见界面里的「算法演示」，以及 `python/` 下的参考实现。
+Every colour starts from its endpoint at once, and each step extends whichever head
+currently has the fewest options — it is the one that runs out of room first, so a
+dead end surfaces while every path is still short.
 
-## 开发
+Four checks run after every step:
+
+- a path may never pass through another colour's endpoint, or that endpoint ends up
+  with the wrong number of connections
+- an unused point must still have enough free connections left to be traversable
+- every head must still be able to reach its own endpoint
+- a leftover region with neither a head nor an endpoint in it is dead
+
+When a board fails, it is retried with the colours renumbered. The shape of the
+search tree depends almost entirely on the order of the colours — not on the vertex
+numbering, and not on the order moves are tried.
+
+## Development
 
 ```bash
 npm install
-npm run dev            # 开发
-npm run build          # 类型检查 + 构建到 dist/
-npm run build:single   # 额外产出单文件 linkr-solver.html
-npm test               # 求解器单元测试
+npm run dev      # dev server
+npm run build    # type-check and build to dist/
+npm test         # solver unit tests
 ```
 
-`python/` 是 uv 管理的命令行版，用来做跨语言对照：
+`python/` holds a command-line version managed by [uv](https://docs.astral.sh/uv/),
+kept as a cross-language reference for the same algorithms:
 
 ```bash
-cd python && uv run python demo.py <截图>
+cd python && uv run python demo.py <screenshot>
 ```
 
-推到 `main` 会触发 GitHub Actions 部署到 Pages。
+Pushing to `main` builds and publishes the site through GitHub Actions.
