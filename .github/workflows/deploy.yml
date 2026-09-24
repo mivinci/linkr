@@ -1,0 +1,60 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# least privilege: read the repo, write only to Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# never let two deploys race; queue the newer one instead
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # gate on the solver unit tests before anything is published
+      - run: npm run test
+
+      # build:single runs tsc + vite, then inlines everything into one file
+      - run: npm run build:single
+
+      # ship both: the app at /, and the standalone file at /linkr-solver.html
+      - name: Copy standalone build into dist
+        run: cp linkr-solver.html dist/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
