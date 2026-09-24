@@ -62,6 +62,12 @@ const DOT_SCALES = [0.6, 0.5, 0.45, 0.4, 0.32, 0.25, 0.72];
 // smaller than the median is page furniture that slipped past the size gate.
 const OUTLIER_RATIO = 0.65;
 
+// How far outside a dot body the segment probe starts, in units of its radius.
+// Must stay above 1.0: the rim is where anti-aliasing and a pale dot's
+// mask-negative body produce notches.  Must stay well below 1.3 or the window
+// shrinks to the point where `t1 <= t0` short-circuits the pixel test entirely.
+const PAD = 1.1;
+
 interface Labeling {
   lab: Int32Array;
   count: number;
@@ -280,6 +286,7 @@ export function extractPuzzle(img: ImageData, p: VisionParams = DEFAULT_VISION):
   classifyColors(img, sat, nodes, p);
   assignPairs(nodes, p.rgbTol);
   const { edges, spacing } = findEdges(mask, nodes, w, h, p.ratio);
+  const inferred = completeEdges(mask, nodes, edges, spacing, w, h);
 
   return {
     nodes,
@@ -293,6 +300,7 @@ export function extractPuzzle(img: ImageData, p: VisionParams = DEFAULT_VISION):
       spacing: Math.round(spacing),
       spread: Math.round(chosen.spread * 1000) / 1000,
       dropped,
+      inferred,
     },
   };
 }
@@ -408,20 +416,29 @@ function findEdges(
   return { edges, spacing };
 }
 
-function segmentIsLine(
+/**
+ * Sample the segment between two dots, strictly outside both bodies.  The
+ * window starts `PAD` radii out from each centre — probing *inside* a body (a
+ * factor below 1.0) only works while the body happens to be mask-positive, and
+ * a pale dot is bright and unsaturated, so its body falls out of the mask and
+ * leaves a few-pixel notch right at the rim.
+ *
+ * Returns `null` when a sample falls outside the image.
+ */
+function segmentProfile(
   mask: Uint8Array,
   a: PNode,
   b: PNode,
   L: number,
   w: number,
   h: number,
-): boolean {
+): { fill: number; hole: number } | null {
   const ra = a.r;
   const rb = b.r;
-  if (L <= ra + rb) return true;
-  const t0 = (ra * 0.92) / L;
-  const t1 = 1 - (rb * 0.92) / L;
-  if (t1 <= t0) return true;
+  if (L <= ra + rb) return { fill: 1, hole: 0 };
+  const t0 = (ra * PAD) / L;
+  const t1 = 1 - (rb * PAD) / L;
+  if (t1 <= t0) return { fill: 1, hole: 0 };
   const steps = Math.max(16, Math.round(L / 2));
   let hits = 0;
   let hole = 0;
@@ -430,7 +447,7 @@ function segmentIsLine(
     const t = t0 + ((t1 - t0) * s) / steps;
     const x = Math.round(a.x + t * (b.x - a.x));
     const y = Math.round(a.y + t * (b.y - a.y));
-    if (x < 0 || y < 0 || x >= w || y >= h) return false;
+    if (x < 0 || y < 0 || x >= w || y >= h) return null;
     if (mask[y * w + x]) {
       hits++;
       run = 0;
@@ -440,7 +457,92 @@ function segmentIsLine(
     }
   }
   const total = steps + 1;
-  return hits / total >= 0.97 && hole <= 2;
+  return { fill: hits / total, hole };
+}
+
+function segmentIsLine(
+  mask: Uint8Array,
+  a: PNode,
+  b: PNode,
+  L: number,
+  w: number,
+  h: number,
+): boolean {
+  const p = segmentProfile(mask, a, b, L, w, h);
+  // a real edge is an unbroken run; allow one short anti-aliasing notch
+  if (!p) return false;
+  return p.fill >= 0.97 && p.hole <= 2;
+}
+
+/**
+ * Add back edges the pixel test dropped but the board's structure demands.
+ * A covered Numberlink vertex needs two edges and a terminal needs one, so a
+ * vertex left below that is a recognition failure, not a board feature.  Only
+ * such vertices are repaired, and only with the best-scoring neighbour close
+ * enough to be lattice-adjacent — not with a blanket "everything one step
+ * apart is an edge", which would invent edges on boards that really do have
+ * gaps.  Returns the number of edges added.
+ */
+export function completeEdges(
+  mask: Uint8Array,
+  nodes: PNode[],
+  edges: PEdge[],
+  spacing: number,
+  w: number,
+  h: number,
+  ratio = 1.35,
+  floor = 0.5,
+): number {
+  const n = nodes.length;
+  if (n < 2 || w <= 0 || h <= 0) return 0;
+  const limit = spacing * ratio;
+  const have = new Set<string>();
+  const deg = new Array<number>(n).fill(0);
+  for (const e of edges) {
+    have.add(key(e.a, e.b));
+    deg[e.a]++;
+    deg[e.b]++;
+  }
+  // terminals only need their one link; a covered plain vertex needs two
+  const need = nodes.map((d) => (d.pair === null ? 2 : 1));
+
+  let added = 0;
+  const stuck = new Set<number>();
+  for (;;) {
+    let v: number | null = null;
+    for (let u = 0; u < n; u++) {
+      if (stuck.has(u) || deg[u] >= need[u]) continue;
+      if (v === null || deg[u] - need[u] < deg[v] - need[v]) v = u;
+    }
+    if (v === null) break;
+
+    let best: { fill: number; u: number } | null = null;
+    for (let u = 0; u < n; u++) {
+      if (u === v) continue;
+      if (have.has(key(v, u))) continue;
+      const L = Math.hypot(nodes[u].x - nodes[v].x, nodes[u].y - nodes[v].y);
+      if (L > limit) continue;
+      if (passesThroughThird(nodes, v, u)) continue;
+      const p = segmentProfile(mask, nodes[v], nodes[u], L, w, h);
+      if (!p || p.fill < floor) continue;
+      if (best === null || p.fill > best.fill) best = { fill: p.fill, u };
+    }
+    if (best === null) {
+      stuck.add(v);
+      continue;
+    }
+    const u = best.u;
+    have.add(key(v, u));
+    edges.push({ a: Math.min(v, u), b: Math.max(v, u), inferred: true });
+    deg[v]++;
+    deg[u]++;
+    added++;
+  }
+  return added;
+}
+
+function key(a: number, b: number): string {
+  return a < b ? `${a}-${b}` : `${b}-${a}`;
 }
 
 function passesThroughThird(nodes: PNode[], i: number, j: number): boolean {

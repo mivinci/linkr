@@ -620,13 +620,15 @@ function detect() {
     const scaleEl = document.querySelector<HTMLParagraphElement>("#scale")!;
     scaleEl.textContent = m
       ? `点半径 ${m.radius}px · 网格间距 ${m.spacing}px · 最小点 ${m.minDist}px · ` +
-        `孔洞上限 ${m.maxHole}${m.dropped ? ` · 忽略干扰 ${m.dropped}` : ""}`
+        `孔洞上限 ${m.maxHole}${m.dropped ? ` · 忽略干扰 ${m.dropped}` : ""}` +
+        `${m.inferred ? ` · 推断补边 ${m.inferred}` : ""}`
       : "";
 
     // verdict on the first line, numbers and caveats underneath
     const notes: string[] = [`${dt}ms`];
     if (bad.length || unpaired) notes.push(`有 ${bad.length + unpaired} 处颜色需要人工校对`);
     if (isolated) notes.push(`有 ${isolated} 个点没连上任何边，试着调大「连边距离系数」`);
+    if (p.meta?.inferred) notes.push(`虚线是推断补的边（${p.meta.inferred} 条），可用连边工具核对`);
     setStatus(
       `识别完成：${p.nodes.length} 个点 · ${p.edges.length} 条边\n${notes.join("\n")}`,
       bad.length || unpaired || isolated ? "warn" : "",
