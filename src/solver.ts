@@ -14,7 +14,9 @@
  * Pruning after every move:
  *   terminals   - a path may never route through another colour's terminal, or
  *                 that terminal would end up with degree 2
- *   degree      - a residual vertex must keep enough edges to be traversable
+ *   degree      - a residual vertex must keep enough edges to be traversable.
+ *                 Strict mode only: with requireFull off a vertex may simply
+ *                 be left out, so the floor would reject legitimate answers.
  *   reachability- every head must still be able to reach its own target
  *   components  - a residual component with no head and no target is dead, and
  *                 a head may not be cut off from its target
@@ -216,7 +218,17 @@ function solveOnce(req: SolveRequest, timeLimitMs: number, nodeBudget: number): 
       for (const v of adj[w]) {
         if (avail[v] && !usedE.has(ek(w, v))) res[w].push(v);
       }
-      if (res[w].length < (isEndpoint[w] ? 1 : 2)) return false;
+    }
+
+    // The degree floor IS the coverage constraint: an unused plain vertex
+    // still needing two edges is only a failure when every vertex has to be
+    // covered.  Applying it in relaxed mode rejects legitimate partial
+    // solutions and silently turns the relaxed mode into the strict one.
+    if (requireFull) {
+      for (let w = 0; w < n; w++) {
+        if (!avail[w]) continue;
+        if (res[w].length < (isEndpoint[w] ? 1 : 2)) return false;
+      }
     }
 
     if (!requireFull) {
