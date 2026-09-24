@@ -55,7 +55,7 @@ export function drawScene(
     ctx.lineWidth = scene.ghostEdges ? 9 : 6;
     ctx.beginPath();
     for (let i = 0; i < puzzle.edges.length; i++) {
-      if (i === scene.hoverEdge) continue;
+      if (i === scene.hoverEdge || puzzle.edges[i].inferred) continue;
       const e = puzzle.edges[i];
       const a = puzzle.nodes[e.a];
       const b = puzzle.nodes[e.b];
@@ -63,6 +63,25 @@ export function drawScene(
       ctx.lineTo(b.x, b.y);
     }
     ctx.stroke();
+    // Edges the pixel test missed but the structure demands: dashed, in the
+    // warning colour, so they read as "check these" rather than as detections.
+    if (scene.showOverlay && !scene.ghostEdges) {
+      ctx.save();
+      ctx.setLineDash([7, 9]);
+      ctx.strokeStyle = "rgba(255, 183, 77, 0.95)";
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      for (let i = 0; i < puzzle.edges.length; i++) {
+        if (i === scene.hoverEdge || !puzzle.edges[i].inferred) continue;
+        const e = puzzle.edges[i];
+        const a = puzzle.nodes[e.a];
+        const b = puzzle.nodes[e.b];
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
     if (scene.hoverEdge !== null && puzzle.edges[scene.hoverEdge]) {
       const e = puzzle.edges[scene.hoverEdge];
       const a = puzzle.nodes[e.a];

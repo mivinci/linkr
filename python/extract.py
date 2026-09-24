@@ -264,6 +264,12 @@ def name_hue(h: float) -> str:
 
 # ---------------------------------------------------------------- edges
 
+# How far outside a dot body the segment probe starts, in units of its radius.
+# Must stay above 1.0: the rim is where anti-aliasing and a pale dot's
+# mask-negative body produce notches.  Must stay well below 1.3 or the window
+# shrinks to the point where `t1 <= t0` short-circuits the pixel test entirely.
+PAD = 1.10
+
 
 def find_edges(mask: np.ndarray, dots: list[Dot], ratio: float = 1.9,
                fill: float = 0.97) -> list[tuple[int, int]]:
@@ -295,26 +301,112 @@ def find_edges(mask: np.ndarray, dots: list[Dot], ratio: float = 1.9,
     return edges
 
 
-def segment_is_line(mask: np.ndarray, a: np.ndarray, b: np.ndarray, ra: float,
-                    rb: float, fill: float = 0.97) -> bool:
-    """True when the segment between two dot bodies is unbroken line pixels."""
+def segment_profile(mask: np.ndarray, a: np.ndarray, b: np.ndarray, ra: float,
+                    rb: float) -> tuple[float, int]:
+    """Sample the segment between two dots, strictly outside both bodies.
+
+    Returns `(fill, hole)`: the fraction of samples that landed on line pixels,
+    and the longest consecutive run of misses.  The window starts `PAD` radii
+    out from each centre — probing *inside* a body (a factor below 1.0) only
+    works while the body happens to be mask-positive, and a pale dot is bright
+    and unsaturated, so its body falls out of the mask and leaves a few-pixel
+    notch right at the rim.
+    """
     seg = b - a
     L = float(np.hypot(*seg))
     if L <= ra + rb:
-        return True
-    t0, t1 = ra * 0.92 / L, 1 - rb * 0.92 / L
+        return 1.0, 0
+    t0, t1 = ra * PAD / L, 1 - rb * PAD / L
     if t1 <= t0:
-        return True
-    ts = np.linspace(t0, t1, max(16, int(L / 2)))
+        return 1.0, 0
+    steps = max(16, int(L / 2))
+    ts = np.linspace(t0, t1, steps + 1)
     xs = np.clip(np.round(a[0] + ts * seg[0]).astype(int), 0, mask.shape[1] - 1)
     ys = np.clip(np.round(a[1] + ts * seg[1]).astype(int), 0, mask.shape[0] - 1)
-    # a real edge is an unbroken run; allow one short anti-aliasing notch
     hit = mask[ys, xs]
-    if hit.all():
-        return True
-    runs = np.split(hit, np.nonzero(~hit)[0])
-    hole = max((len(r) for r in runs if len(r) and not r[0]), default=0)
-    return bool(hit.mean() >= fill and hole <= 2)
+    hole = run = 0
+    for v in hit:
+        if v:
+            run = 0
+        else:
+            run += 1
+            hole = max(hole, run)
+    return float(hit.mean()), hole
+
+
+def segment_is_line(mask: np.ndarray, a: np.ndarray, b: np.ndarray, ra: float,
+                    rb: float, fill: float = 0.97) -> bool:
+    """True when the segment between two dot bodies is unbroken line pixels."""
+    f, hole = segment_profile(mask, a, b, ra, rb)
+    # a real edge is an unbroken run; allow one short anti-aliasing notch
+    return f >= fill and hole <= 2
+
+
+def complete_edges(mask: np.ndarray, dots: list[Dot], edges: list[tuple[int, int]],
+                   ratio: float = 1.35, floor: float = 0.5
+                   ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Add back edges the pixel test dropped but the board's structure demands.
+
+    A covered Numberlink vertex needs two edges and a terminal needs one, so a
+    vertex left below that is a recognition failure, not a board feature.  Only
+    such vertices are repaired, and only with the best-scoring neighbour close
+    enough to be lattice-adjacent — not with a blanket "everything one step
+    apart is an edge", which would invent edges on boards that really do have
+    gaps.  Returns `(all_edges, added)`.
+    """
+    n = len(dots)
+    if n < 2:
+        return list(edges), []
+    pts = np.array([[d.x, d.y] for d in dots])
+    rad = np.array([d.r for d in dots])
+    dmat = np.hypot(pts[:, 0][:, None] - pts[:, 0][None, :],
+                    pts[:, 1][:, None] - pts[:, 1][None, :])
+    np.fill_diagonal(dmat, np.inf)
+    limit = float(np.median(np.min(dmat, axis=1))) * ratio
+
+    have = {(min(a, b), max(a, b)) for a, b in edges}
+    deg = [0] * n
+    for a, b in edges:
+        deg[a] += 1
+        deg[b] += 1
+    need = [1 if d.pair is not None else 2 for d in dots]
+
+    out = list(edges)
+    added: list[tuple[int, int]] = []
+    stuck: set[int] = set()
+    while True:
+        v = None
+        for u in range(n):
+            if u in stuck or deg[u] >= need[u]:
+                continue
+            if v is None or deg[u] - need[u] < deg[v] - need[v]:
+                v = u
+        if v is None:
+            break
+        best = None
+        for u in range(n):
+            if u == v:
+                continue
+            key = (min(v, u), max(v, u))
+            if key in have or dmat[v, u] > limit:
+                continue
+            if passes_through_third(pts, rad, v, u):
+                continue
+            f, _ = segment_profile(mask, pts[v], pts[u], rad[v], rad[u])
+            if f < floor:
+                continue
+            if best is None or f > best[0]:
+                best = (f, key)
+        if best is None:
+            stuck.add(v)
+            continue
+        key = best[1]
+        have.add(key)
+        out.append(key)
+        added.append(key)
+        deg[key[0]] += 1
+        deg[key[1]] += 1
+    return out, added
 
 
 def passes_through_third(pts: np.ndarray, rad: np.ndarray, i: int, j: int) -> bool:
@@ -350,14 +442,15 @@ def extract(path: str, thresh: float = 100.0, sat_min: int = 60,
     dots = [Dot(x, y, r) for x, y, r in found]
     classify_colors(rgb, sat, hue_map(rgb), dots, sat_min)
     pairs = group_pairs(dots)
-    edges = find_edges(mask, dots, ratio)
+    edges, inferred = complete_edges(mask, dots, find_edges(mask, dots, ratio))
     spread = radius_spread(found)
     return Graph(dots=dots, edges=edges, pairs=[p for p in pairs if len(p) == 2],
                  meta={"radius": round(radius_quantile(dist), 1),
                        "min_dist": round(md, 1),
                        "max_hole": max_hole or auto_max_hole(base),
                        "spread": round(spread, 3),
-                       "dropped": dropped})
+                       "dropped": dropped,
+                       "inferred": len(inferred)})
 
 
 def write(graph: Graph, path: str) -> None:

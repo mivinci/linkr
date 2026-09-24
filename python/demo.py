@@ -47,7 +47,9 @@ def main() -> None:
 
     g = extract(args.image)
     write(g, os.path.join(args.out, "graph.json"))
-    print(f"dots={len(g.dots)} edges={len(g.edges)} colors={len(g.pairs)}")
+    inf = g.meta.get("inferred", 0)
+    print(f"dots={len(g.dots)} edges={len(g.edges)} colors={len(g.pairs)}"
+          + (f" (推断补边 {inf})" if inf else ""))
     for c, (a, b) in enumerate(g.pairs):
         print(f"  color {c}: {g.dots[a].color} #{a} ({g.dots[a].x:.0f},{g.dots[a].y:.0f})"
               f"  <->  #{b} ({g.dots[b].x:.0f},{g.dots[b].y:.0f})")

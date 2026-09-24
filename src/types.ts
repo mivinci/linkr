@@ -12,6 +12,9 @@ export interface PNode {
 export interface PEdge {
   a: number;
   b: number;
+  /** Set when the pixel test rejected the edge and `completeEdges` added it
+   *  back because the board's structure requires it.  Drawn dashed. */
+  inferred?: boolean;
 }
 
 /** Scale-dependent values derived from the image, for display and debugging. */
@@ -23,6 +26,8 @@ export interface PuzzleMeta {
   spread: number;
   /** Page furniture dropped by the radius-consistency filter. */
   dropped: number;
+  /** Edges the pixel test missed and `completeEdges` added back. */
+  inferred: number;
 }
 
 export interface Puzzle {
