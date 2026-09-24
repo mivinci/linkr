@@ -120,11 +120,15 @@ def _solve_restarting(graph: Graph, require_full: bool, time_limit: float,
 def solve(graph: Graph, require_full: bool = True, time_limit: float = 30.0,
           max_solutions: int = 1, seed: int | None = None,
           node_budget: int | None = None, restarts: int = 0,
-          order: str = "adj") -> Stats:
+          order: str = "greedy") -> Stats:
     # Some boards are extremely sensitive to the order the moves are tried in:
     # the same 100-dot lattice took 433 nodes with one set of terminals and over
-    # a million with another.  Rather than guess a better static order, run the
-    # plain order first and then retry with shuffled adjacency lists.
+    # a million with another.  "greedy" steps onto the target when it can and
+    # otherwise prefers the smallest hop count; it is what the web solver does
+    # and it costs 20x fewer nodes than "adj" on the 62-dot boards (68 vs
+    # 1326).  "adj" is kept as the plain baseline.  The default matches
+    # _solve_restarting -- the two must not disagree, or adding restarts
+    # silently changes the search order.
     if restarts:
         return _solve_restarting(graph, require_full, time_limit, max_solutions,
                                  node_budget, restarts, order)

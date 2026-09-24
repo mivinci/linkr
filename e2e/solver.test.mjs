@@ -11,18 +11,24 @@ const fixtures = JSON.parse(readFileSync(new URL("./fixtures.json", import.meta.
 let failed = 0;
 
 for (const [name, g] of Object.entries(fixtures)) {
+  // `requireFull: false` opts a fixture into relaxed mode, where a vertex with
+  // too few edges may simply stay uncovered instead of failing the board.
+  const requireFull = g.requireFull !== false;
   const t0 = Date.now();
   const res = solve({
     n: g.n,
     edges: g.edges,
     pairs: g.pairs,
-    requireFull: true,
+    requireFull,
     maxSolutions: 1,
     timeLimitMs: 30000,
   });
   const ms = Date.now() - t0;
   if (!res.solutions.length) {
-    console.log(`${name}: NO SOLUTION  nodes=${res.nodes} ${ms}ms timedOut=${res.timedOut}`);
+    console.log(
+      `${name} [${requireFull ? "full" : "relaxed"}]: NO SOLUTION  ` +
+        `nodes=${res.nodes} ${ms}ms timedOut=${res.timedOut}`,
+    );
     failed++;
     continue;
   }
@@ -30,7 +36,10 @@ for (const [name, g] of Object.entries(fixtures)) {
   const flat = paths.flat();
   const problems = [];
   if (new Set(flat).size !== flat.length) problems.push("a vertex is used twice");
-  if (new Set(flat).size !== g.n) problems.push(`coverage ${new Set(flat).size}/${g.n}`);
+  // Coverage is only a requirement in strict mode; relaxed mode is allowed to
+  // leave vertices out, and that is precisely what the relaxed-leaf board tests.
+  if (requireFull && new Set(flat).size !== g.n)
+    problems.push(`coverage ${new Set(flat).size}/${g.n}`);
   for (let c = 0; c < g.pairs.length; c++) {
     const p = paths[c];
     const [a, b] = g.pairs[c];
@@ -48,7 +57,8 @@ for (const [name, g] of Object.entries(fixtures)) {
   }
   if (problems.length) failed++;
   console.log(
-    `${name}: nodes=${res.nodes} ${ms}ms paths=${paths.length} ` +
+    `${name} [${requireFull ? "full" : "relaxed"}]: nodes=${res.nodes} ${ms}ms ` +
+      `paths=${paths.length} covered=${new Set(flat).size}/${g.n} ` +
       (problems.length ? `FAIL ${problems.join("; ")}` : "ok"),
   );
 }
