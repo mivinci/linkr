@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw
 
 from extract import Graph, extract, write
 from solve import solve
+from z3solve import solve_z3
 
 FALLBACK = [(230, 60, 60), (60, 110, 230), (30, 170, 90), (0, 170, 200),
             (150, 60, 220), (230, 160, 20), (20, 110, 60), (220, 60, 160)]
