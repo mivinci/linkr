@@ -23,34 +23,36 @@
         </section>
 
         <section id="sec-params" hidden>
-          <h2>识别参数</h2>
-          <label class="slider">
-            <span>暗色阈值</span>
-            <input id="p-thresh" type="range" min="40" max="180" step="5" value="100" />
-            <b id="v-thresh">100</b>
-          </label>
-          <label class="slider">
-            <span>饱和度阈值</span>
-            <input id="p-sat" type="range" min="20" max="150" step="5" value="60" />
-            <b id="v-sat">60</b>
-          </label>
-          <label class="slider">
-            <span>最小点半径</span>
-            <input id="p-mindist" type="range" min="0" max="90" step="1" value="0" />
-            <b id="v-mindist">自动</b>
-          </label>
-          <label class="slider">
-            <span>连边距离系数</span>
-            <input id="p-ratio" type="range" min="1.2" max="2.6" step="0.05" value="1.9" />
-            <b id="v-ratio">1.90</b>
-          </label>
-          <label class="slider">
-            <span>孔洞上限</span>
-            <input id="p-hole" type="range" min="0" max="80000" step="500" value="0" />
-            <b id="v-hole">自动</b>
-          </label>
-          <button id="btn-redetect" class="ghost">重新识别</button>
-          <p class="hint" id="scale">点半径 / 网格间距 会在识别后显示</p>
+          <details id="params-fold">
+            <summary><h2>识别参数</h2><span class="fold-mark" aria-hidden="true"></span></summary>
+              <label class="slider">
+                <span>暗色阈值</span>
+                <input id="p-thresh" type="range" min="40" max="180" step="5" value="100" />
+                <b id="v-thresh">100</b>
+              </label>
+              <label class="slider">
+                <span>饱和度阈值</span>
+                <input id="p-sat" type="range" min="20" max="150" step="5" value="60" />
+                <b id="v-sat">60</b>
+              </label>
+              <label class="slider">
+                <span>最小点半径</span>
+                <input id="p-mindist" type="range" min="0" max="90" step="1" value="0" />
+                <b id="v-mindist">自动</b>
+              </label>
+              <label class="slider">
+                <span>连边距离系数</span>
+                <input id="p-ratio" type="range" min="1.2" max="2.6" step="0.05" value="1.9" />
+                <b id="v-ratio">1.90</b>
+              </label>
+              <label class="slider">
+                <span>孔洞上限</span>
+                <input id="p-hole" type="range" min="0" max="80000" step="500" value="0" />
+                <b id="v-hole">自动</b>
+              </label>
+              <button id="btn-redetect" class="ghost">重新识别</button>
+              <p class="hint" id="scale">点半径 / 网格间距 会在识别后显示</p>
+          </details>
         </section>
 
         <section id="sec-tools">
