@@ -1,5 +1,7 @@
+import { satSolve } from "./sat";
+
 /**
- * Numberlink on a graph: split every vertex into vertex-disjoint paths, one per
+ * Linkr on a graph: split every vertex into vertex-disjoint paths, one per
  * colour class, each path joining the two terminals of its class.  Edges are
  * used at most once.  With requireFull every vertex must be covered, so a plain
  * vertex ends up with degree 2 and a terminal with degree 1.
@@ -34,6 +36,10 @@ export interface SolveRequest {
   nodeBudget?: number;
   /** Record the order in which the winning solution was grown, for playback. */
   trace?: boolean;
+  /** Set false to force the DFS search and skip the SAT engine. */
+  sat?: boolean;
+  /** Wall-clock cap for the SAT engine alone.  Default `SAT_TIME_LIMIT_MS`. */
+  satTimeLimitMs?: number;
 }
 
 export interface SolveResult {
@@ -45,6 +51,30 @@ export interface SolveResult {
   trace?: [number, number][];
   /** How many colour orderings were tried before this one succeeded. */
   attempts?: number;
+  /** Which engine produced this result. */
+  engine?: "sat" | "dfs";
+  /** Lazy cycle cuts, SAT only. */
+  cuts?: number;
+  /** The trace is a replay of the answer, not a recording of the search. */
+  syntheticTrace?: boolean;
+  /** The user called it off. */
+  cancelled?: boolean;
+}
+
+/**
+ * Callbacks `solve` can take but `postMessage` cannot carry, so they live
+ * outside `SolveRequest`: the worker supplies its own.
+ */
+export interface SolveHooks {
+  /** Checked between SAT chunks and, where the search loops, between attempts. */
+  shouldStop?: () => boolean;
+  /** SAT only: cumulative conflict count after each chunk. */
+  onProgress?: (conflicts: number) => void;
+}
+
+/** First message to a fresh worker: hand it the SAT engine. */
+export interface WorkerInit {
+  wasmB64: string;
 }
 
 export interface WorkerRequest extends SolveRequest {
@@ -56,10 +86,106 @@ export interface WorkerResponse extends SolveResult {
   error?: string;
 }
 
-export function solve(req: SolveRequest): SolveResult {
+/** Drop the in-flight job at the next SAT chunk boundary. */
+export interface WorkerCancel {
+  cancel: true;
+}
+
+/** Unsolicited mid-job note: how far the SAT engine has got. */
+export interface WorkerProgress {
+  id: number;
+  progress: number;
+}
+
+/**
+ * Try the SAT engine first.  It is complete and finishes real boards in
+ * milliseconds, so when it applies there is nothing to gain from the DFS.  It
+ * only covers `requireFull` — the degree floor in the encoding *is* the
+ * coverage constraint — so relaxed requests fall through.  So does anything
+ * else the engine cannot handle (no wasm, encoding refused): the caller still
+ * gets an answer from the search below.
+ */
+/** How long the SAT engine gets before it has to admit it does not know. */
+export const SAT_TIME_LIMIT_MS = 10_000;
+
+async function solveSatAttempt(req: SolveRequest, hooks?: SolveHooks): Promise<SolveResult | null> {
+  if (req.sat === false || !req.requireFull) return null;
+  const r = await satSolve({ n: req.n, edges: req.edges, pairs: req.pairs }, Math.max(1, req.maxSolutions), 64, {
+    deadlineMs: req.satTimeLimitMs ?? SAT_TIME_LIMIT_MS,
+    shouldStop: hooks?.shouldStop,
+    onProgress: hooks?.onProgress,
+  });
+  // `unknown` is not a failure of the engine, so it must not quietly hand the
+  // board to the search: if SAT could not decide it in ten seconds, the search
+  // will not decide it in twenty either.
+  if (r.status === "unavailable") return null;
+  const out: SolveResult = {
+    solutions: r.solutions,
+    nodes: r.conflicts,
+    ms: r.ms,
+    timedOut: r.status === "unknown",
+    attempts: 1,
+    engine: "sat",
+    cuts: r.cuts,
+    cancelled: r.status === "unknown" && (hooks?.shouldStop?.() ?? false) ? true : undefined,
+  };
+  if (req.trace && r.solutions.length) {
+    out.trace = spreadTrace(r.solutions[0]);
+    out.syntheticTrace = true;
+  }
+  return out;
+}
+
+/**
+ * Cap on the opening search when a trace was asked for.  Small enough that a
+ * board the search cannot finish is handed to SAT while still feeling instant,
+ * generous enough that the boards it *can* finish — the common case — keep a
+ * genuine derivation.
+ */
+const DEMO_BUDGET_MS = 1200;
+const DEMO_RESTARTS = 8;
+
+/**
+ * Give the search first go when the caller wants a trace.
+ *
+ * A SAT answer has no growth order attached to it: the solver decides variables,
+ * it does not walk paths.  Since the algorithm demo replays exactly that order,
+ * an answer and its trace have to come from the same run — so when a trace is
+ * wanted the search gets a bounded shot at it, and only if that fails does SAT
+ * take over (with a replayed rather than recorded order; see `syntheticTrace`).
+ */
+function solveForDemo(req: SolveRequest): SolveResult | null {
+  if (!req.trace || !req.requireFull || req.sat === false) return null;
+  const budget = Math.min(req.timeLimitMs, DEMO_BUDGET_MS);
+  const r = solveRestarting({ ...req, maxSolutions: 1, timeLimitMs: budget }, DEMO_RESTARTS);
+  return r.solutions.length ? { ...r, engine: "dfs" } : null;
+}
+
+/**
+ * Stand-in growth order for a SAT answer: the colours take turns advancing one
+ * vertex at a time.  Not how the solver found it — SAT found nothing step by
+ * step — but it is how a person would draw the answer, and it is labelled as a
+ * replay wherever it is shown.
+ */
+function spreadTrace(paths: number[][]): [number, number][] {
+  const out: [number, number][] = [];
+  const longest = paths.reduce((m, p) => Math.max(m, p.length), 0);
+  for (let i = 1; i < longest; i++) {
+    for (let c = 0; c < paths.length; c++) {
+      if (i < paths[c].length) out.push([c, paths[c][i]]);
+    }
+  }
+  return out;
+}
+
+export async function solve(req: SolveRequest, hooks?: SolveHooks): Promise<SolveResult> {
+  const demo = solveForDemo(req);
+  if (demo) return demo;
+  const s = await solveSatAttempt(req, hooks);
+  if (s) return s;
   const restarts = req.restarts ?? 0;
-  if (restarts > 0) return solveRestarting(req, restarts);
-  return solveOnce(req, req.timeLimitMs, 0);
+  if (restarts > 0) return { ...solveRestarting(req, restarts), engine: "dfs" };
+  return { ...solveOnce(req, req.timeLimitMs, 0), engine: "dfs" };
 }
 
 function mulberry32(seed: number): () => number {

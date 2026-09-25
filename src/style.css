@@ -91,6 +91,44 @@ body {
   letter-spacing: 0.08em;
 }
 
+/* Collapsible sections.  Detection parameters are a rabbit hole most sessions
+   never need, so they start folded; the panel is short enough to scroll. */
+#panel details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+#panel details > summary::-webkit-details-marker {
+  display: none;
+}
+
+#panel details > summary h2 {
+  margin: 0;
+}
+
+#panel details[open] > summary {
+  margin-bottom: 10px;
+}
+
+.fold-mark {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  border-right: 1.5px solid var(--fg-dim);
+  border-bottom: 1.5px solid var(--fg-dim);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+#panel details[open] > summary .fold-mark {
+  transform: rotate(45deg);
+}
+
 .row {
   display: flex;
   gap: 8px;

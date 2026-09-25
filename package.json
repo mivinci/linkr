@@ -10,8 +10,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:single": "npm run build && node scripts/singlefile.mjs",
+    "build:sat": "node scripts/build-sat.mjs",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types e2e/solver.test.mjs && node --experimental-strip-types --import ./e2e/ts-register.mjs e2e/vision.test.mjs"
+    "test": "node --experimental-strip-types --import ./e2e/ts-register.mjs e2e/solver.test.mjs && node --experimental-strip-types --import ./e2e/ts-register.mjs e2e/vision.test.mjs && node --experimental-strip-types --import ./e2e/ts-register.mjs e2e/sat.test.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.63.0",

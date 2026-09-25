@@ -1,4 +1,4 @@
-"""Numberlink on a graph.
+"""Linkr on a graph.
 
 Partition every vertex into vertex-disjoint paths, one path per colour class,
 each path joining the two terminals of that class.  Every edge is used at most

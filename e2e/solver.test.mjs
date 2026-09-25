@@ -15,7 +15,7 @@ for (const [name, g] of Object.entries(fixtures)) {
   // too few edges may simply stay uncovered instead of failing the board.
   const requireFull = g.requireFull !== false;
   const t0 = Date.now();
-  const res = solve({
+  const res = await solve({
     n: g.n,
     edges: g.edges,
     pairs: g.pairs,

@@ -1,0 +1,20 @@
+[package]
+name = "linkr-sat"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Linkr SAT solver compiled to WebAssembly (batsat, C ABI)"
+
+[dependencies]
+batsat = "0.6"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+
+[workspace]

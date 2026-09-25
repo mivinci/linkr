@@ -174,6 +174,19 @@ await page.keyboard.press("Escape");
 await page.waitForFunction(() => document.querySelector("#modal")?.hidden === true);
 console.log(`algorithm demo: ${traceOk.steps} steps replay exactly (${traceOk.nodes} nodes searched)`);
 
+// The walkthrough under the animation must describe the engine that ran.
+const walk = await page.evaluate(() => ({
+  dfs: !document.querySelector("#algo-dfs").hidden,
+  sat: !document.querySelector("#algo-sat").hidden,
+  engine: window.__nl.state.stats?.engine,
+  synthetic: window.__nl.state.traceSynthetic,
+}));
+if (walk.dfs === walk.sat) fail("walkthrough: exactly one engine list must be visible");
+if (walk.engine === "sat" && !walk.sat) fail("walkthrough: SAT board shows the DFS list");
+if (walk.engine === "dfs" && !walk.dfs) fail("walkthrough: DFS board shows the SAT list");
+if (walk.synthetic && !walk.sat) fail("walkthrough: replayed trace shown with the DFS list");
+console.log(`walkthrough: ${walk.engine} list${walk.synthetic ? " (trace is a replay)" : ""}`);
+
 // uniqueness pass
 await page.check("#cb-uniq");
 await page.click("#btn-solve");

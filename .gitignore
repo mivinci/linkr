@@ -7,6 +7,9 @@ linkr-solver.html
 e2e/out*/
 e2e/smoke.log
 
+# rust build tree; src/sat.wasm.ts is the committed build output
+sat/target/
+
 # python reference implementation
 python/out*/
 python/.venv/
