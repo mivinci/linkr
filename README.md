@@ -83,7 +83,7 @@ needs Rust — the built wasm is committed as `src/sat.wasm.ts`, so nobody else 
 
 ```bash
 rustup target add wasm32-unknown-unknown
-npm run sat:build   # sat/ -> src/sat.wasm.ts
+npm run build:sat   # sat/ -> src/sat.wasm.ts
 ```
 
 `python/` holds a command-line version managed by [uv](https://docs.astral.sh/uv/),

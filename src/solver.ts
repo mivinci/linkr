@@ -1,7 +1,7 @@
 import { satSolve } from "./sat";
 
 /**
- * Numberlink on a graph: split every vertex into vertex-disjoint paths, one per
+ * Linkr on a graph: split every vertex into vertex-disjoint paths, one per
  * colour class, each path joining the two terminals of its class.  Edges are
  * used at most once.  With requireFull every vertex must be covered, so a plain
  * vertex ends up with degree 2 and a terminal with degree 1.

@@ -3,7 +3,7 @@ name = "linkr-sat"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Numberlink SAT solver compiled to WebAssembly (batsat, C ABI)"
+description = "Linkr SAT solver compiled to WebAssembly (batsat, C ABI)"
 
 [dependencies]
 batsat = "0.6"

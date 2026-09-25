@@ -1,5 +1,5 @@
 /**
- * Numberlink as SAT, solved by `sat/` (batsat compiled to wasm).
+ * Linkr as SAT, solved by `sat/` (batsat compiled to wasm).
  *
  * Encoding B — two families of variables instead of one per (edge, colour):
  *

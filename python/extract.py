@@ -1,4 +1,4 @@
-"""Extract a Numberlink puzzle graph from a screenshot.
+"""Extract a Linkr puzzle graph from a screenshot.
 
 Pipeline:
   1. dot mask              dark pixels UNION saturated pixels.  The dark part
@@ -347,7 +347,7 @@ def complete_edges(mask: np.ndarray, dots: list[Dot], edges: list[tuple[int, int
                    ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
     """Add back edges the pixel test dropped but the board's structure demands.
 
-    A covered Numberlink vertex needs two edges and a terminal needs one, so a
+    A covered vertex needs two edges and a terminal needs one, so a
     vertex left below that is a recognition failure, not a board feature.  Only
     such vertices are repaired, and only with the best-scoring neighbour close
     enough to be lattice-adjacent — not with a blanket "everything one step
