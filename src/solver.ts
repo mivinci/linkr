@@ -53,6 +53,8 @@ export interface SolveResult {
   engine?: "sat" | "dfs";
   /** Lazy cycle cuts, SAT only. */
   cuts?: number;
+  /** The trace is a replay of the answer, not a recording of the search. */
+  syntheticTrace?: boolean;
 }
 
 /** First message to a fresh worker: hand it the SAT engine. */
@@ -90,14 +92,43 @@ function solveSatAttempt(req: SolveRequest): SolveResult | null {
     engine: "sat",
     cuts: r.cuts,
   };
-  if (req.trace && r.solutions.length) out.trace = spreadTrace(r.solutions[0]);
+  if (req.trace && r.solutions.length) {
+    out.trace = spreadTrace(r.solutions[0]);
+    out.syntheticTrace = true;
+  }
   return out;
 }
 
 /**
- * A SAT answer arrives as whole paths, with no growth order attached.  Replaying
- * the colours round-robin one vertex at a time is not how the solver found it,
- * but it is how a human would draw it, which is the point of the playback.
+ * Cap on the opening search when a trace was asked for.  Small enough that a
+ * board the search cannot finish is handed to SAT while still feeling instant,
+ * generous enough that the boards it *can* finish — the common case — keep a
+ * genuine derivation.
+ */
+const DEMO_BUDGET_MS = 1200;
+const DEMO_RESTARTS = 8;
+
+/**
+ * Give the search first go when the caller wants a trace.
+ *
+ * A SAT answer has no growth order attached to it: the solver decides variables,
+ * it does not walk paths.  Since the algorithm demo replays exactly that order,
+ * an answer and its trace have to come from the same run — so when a trace is
+ * wanted the search gets a bounded shot at it, and only if that fails does SAT
+ * take over (with a replayed rather than recorded order; see `syntheticTrace`).
+ */
+function solveForDemo(req: SolveRequest): SolveResult | null {
+  if (!req.trace || !req.requireFull || req.sat === false) return null;
+  const budget = Math.min(req.timeLimitMs, DEMO_BUDGET_MS);
+  const r = solveRestarting({ ...req, maxSolutions: 1, timeLimitMs: budget }, DEMO_RESTARTS);
+  return r.solutions.length ? { ...r, engine: "dfs" } : null;
+}
+
+/**
+ * Stand-in growth order for a SAT answer: the colours take turns advancing one
+ * vertex at a time.  Not how the solver found it — SAT found nothing step by
+ * step — but it is how a person would draw the answer, and it is labelled as a
+ * replay wherever it is shown.
  */
 function spreadTrace(paths: number[][]): [number, number][] {
   const out: [number, number][] = [];
@@ -111,6 +142,8 @@ function spreadTrace(paths: number[][]): [number, number][] {
 }
 
 export function solve(req: SolveRequest): SolveResult {
+  const demo = solveForDemo(req);
+  if (demo) return demo;
   const s = solveSatAttempt(req);
   if (s) return s;
   const restarts = req.restarts ?? 0;

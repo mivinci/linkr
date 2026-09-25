@@ -17,8 +17,9 @@ Drop in a screenshot — it reads the board, works out the answer, and draws it.
    point or an edge, link two points, or set a colour.
 4. Press solve. Tick the uniqueness option to also check, by exhausting the search,
    that no second answer exists.
-5. The algorithm demo replays how the solver actually grew the paths on this exact
-   board, one step at a time.
+5. The algorithm demo replays how the solver grew the paths on this exact board, one
+   step at a time. When the search found the answer it is the real derivation; when
+   SAT did, it is a replay of the answer, because SAT never walks a path.
 6. Export the answer as an image (cropped to the board) or as JSON.
 
 ## How it solves
@@ -42,8 +43,15 @@ numbering, and not on the order moves are tried.
 ### The SAT engine
 
 The search above runs out on some boards: a 64-point triangle lattice goes past two
-million nodes without finishing. So the solver first tries SAT, and only falls back
-to the search when SAT does not apply.
+million nodes without finishing. So there is also a SAT engine, and the two are
+scheduled rather than one always winning:
+
+- **Solving** asks for a growth order the demo can replay. A SAT answer has none —
+  the solver decides variables, it does not walk paths — so the search gets a bounded
+  first shot (1.2 s). Boards it finishes keep a genuine derivation; boards it does
+  not are handed to SAT, and the demo says the replay is a replay.
+- **The uniqueness check** asks no such question, so it always runs on SAT, which is
+  what turns it from a 20-second exhaustion into a proof.
 
 The encoding has two variable families — `x[w][c]` for "point `w` carries colour `c`"
 and `y[j]` for "edge `j` is used" — instead of one variable per (edge, colour) pair.

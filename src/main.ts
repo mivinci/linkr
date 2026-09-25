@@ -104,6 +104,8 @@ const state = {
   solution: null as number[][] | null,
   /** How the winning solution was grown, step by step, for the algorithm demo. */
   trace: null as [number, number][] | null,
+  /** True when `trace` replays the answer instead of recording the search. */
+  traceSynthetic: false,
   stats: null as {
     nodes: number;
     ms: number;
@@ -842,6 +844,7 @@ async function solveNow() {
   // show the answer immediately, then verify uniqueness in the background
   state.solution = res.solutions[0];
   state.trace = res.trace ?? null;
+  state.traceSynthetic = res.syntheticTrace ?? false;
   state.stats = {
     nodes: res.nodes,
     ms: res.ms,
@@ -886,12 +889,15 @@ async function solveNow() {
       if (a !== b && a !== c) distinct = true;
     }
   }
+  // `detail` describes how the answer was found; the uniqueness verdict is a
+  // separate run and, on a board the search could handle, a different engine.
+  const proven = uniq.engine === "sat" && res.engine !== "sat" ? "（唯一性由 SAT 证明）" : "";
   if (uniq.solutions.length >= 2 && distinct) {
     setStatus(`${headline}\n这个题目不止一个解（至少找到 2 个）\n${detail}`, "warn");
   } else if (uniq.timedOut) {
     setStatus(`${headline}\n没能穷尽搜索，不能断定唯一\n${detail}`, "");
   } else {
-    setStatus(`${headline}\n唯一解\n${detail}`, "ok");
+    setStatus(`${headline}\n唯一解${proven}\n${detail}`, "ok");
   }
 }
 
@@ -1028,7 +1034,25 @@ function renderModal() {
   renderStats();
 }
 
+const algoLead = document.querySelector<HTMLElement>("#algo-lead")!;
+
+/**
+ * The demo advertises the solver's own derivation, which is only true when the
+ * search produced the answer.  SAT decides variables and never walks a path, so
+ * for those boards the identical animation is a replay of the answer.  Say which
+ * one it is rather than letting the lead paragraph claim the wrong thing.
+ */
+function renderAlgoLead(): void {
+  algoLead.innerHTML = state.traceSynthetic
+    ? "这一道题是 <b>SAT 解出的</b>：它判定变量，不长路径，所以没有“实际生长顺序”可以重放。" +
+      "下面是<b>答案本身的回放</b> —— 按颜色轮转铺开，看起来像推导，其实不是。" +
+      "SAT 那一栏的冲突次数才是它真正的工作量。"
+    : "下面这段动画是求解器在<b>这一道题上真实走过的那条推导</b> —— 按它实际的生长顺序" +
+      "重放，不是答案的美化回放。中途走进死路又退回去的分支没有画出来，那部分量级见下方统计。";
+}
+
 function renderStats() {
+  renderAlgoLead();
   const p = state.puzzle;
   const groups = pairGroups().size;
   const rows: [string, string][] = [
@@ -1059,7 +1083,9 @@ function renderStats() {
     [
       "生长步数",
       state.trace && state.stats
-        ? `${state.trace.length} 步（另有 ${Math.max(0, state.stats.nodes - state.trace.length)} 次尝试被回退）`
+        ? state.traceSynthetic
+          ? `${state.trace.length} 步（回放，非搜索记录）`
+          : `${state.trace.length} 步（另有 ${Math.max(0, state.stats.nodes - state.trace.length)} 次尝试被回退）`
         : "—",
     ],
   ];

@@ -107,4 +107,56 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
   pass++;
 }
 
+// Scheduling.  A request that wants a trace lets the search try first, so the
+// boards it can finish keep a genuine derivation; the ones it cannot still end
+// up on SAT — but then the trace is only a replay, and has to say so.
+{
+  const { solve } = await import("../src/solver.ts");
+  const load = (f) => {
+    const g = JSON.parse(readFileSync(path.join(fixtures, f), "utf8"));
+    return {
+      n: g.dots.length,
+      edges: g.edges.map((e) => [e[0], e[1]]),
+      pairs: g.pairs.map((p) => [p[0], p[1]]),
+    };
+  };
+  const demo = (g) => ({
+    ...g,
+    requireFull: true,
+    maxSolutions: 1,
+    timeLimitMs: 20000,
+    restarts: 64,
+    nodeBudget: 12000,
+    trace: true,
+  });
+
+  const easy = solve(demo(load("board1-square96.json")));
+  assert.equal(easy.engine, "dfs", "board 1: the search is fast enough to keep a real trace");
+  assert.ok(easy.trace && easy.trace.length > 0, "board 1: trace recorded");
+  assert.equal(easy.syntheticTrace, undefined, "board 1: trace is not a replay");
+  console.log(`ok  ${"schedule-easy".padEnd(26)} -> dfs, ${easy.nodes} nodes, ${easy.ms}ms, real trace`);
+  pass++;
+
+  const hard = solve(demo(load("board2-triangle64.json")));
+  assert.equal(hard.engine, "sat", "board 2: search gives up, SAT takes over");
+  assert.equal(hard.syntheticTrace, true, "board 2: trace is flagged as a replay");
+  console.log(`ok  ${"schedule-hard".padEnd(26)} -> sat, ${hard.nodes} conflicts, ${hard.ms}ms, replay`);
+  pass++;
+
+  // Uniqueness carries no trace, so it goes straight to SAT even on an easy
+  // board — that is the part that turns into a proof instead of a timeout.
+  const uniq = solve({
+    ...load("board1-square96.json"),
+    requireFull: true,
+    maxSolutions: 2,
+    timeLimitMs: 10000,
+    restarts: 8,
+    nodeBudget: 12000,
+  });
+  assert.equal(uniq.engine, "sat", "uniqueness always runs on SAT");
+  assert.equal(uniq.solutions.length, 1, "board 1 is unique");
+  console.log(`ok  ${"schedule-uniqueness".padEnd(26)} -> sat, 1 solution, ${uniq.ms}ms`);
+  pass++;
+}
+
 console.log(`\n${pass} passed`);
