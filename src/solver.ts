@@ -1,3 +1,5 @@
+import { satSolve } from "./sat";
+
 /**
  * Numberlink on a graph: split every vertex into vertex-disjoint paths, one per
  * colour class, each path joining the two terminals of its class.  Edges are
@@ -34,6 +36,8 @@ export interface SolveRequest {
   nodeBudget?: number;
   /** Record the order in which the winning solution was grown, for playback. */
   trace?: boolean;
+  /** Set false to force the DFS search and skip the SAT engine. */
+  sat?: boolean;
 }
 
 export interface SolveResult {
@@ -45,6 +49,15 @@ export interface SolveResult {
   trace?: [number, number][];
   /** How many colour orderings were tried before this one succeeded. */
   attempts?: number;
+  /** Which engine produced this result. */
+  engine?: "sat" | "dfs";
+  /** Lazy cycle cuts, SAT only. */
+  cuts?: number;
+}
+
+/** First message to a fresh worker: hand it the SAT engine. */
+export interface WorkerInit {
+  wasmB64: string;
 }
 
 export interface WorkerRequest extends SolveRequest {
@@ -56,10 +69,53 @@ export interface WorkerResponse extends SolveResult {
   error?: string;
 }
 
+/**
+ * Try the SAT engine first.  It is complete and finishes real boards in
+ * milliseconds, so when it applies there is nothing to gain from the DFS.  It
+ * only covers `requireFull` — the degree floor in the encoding *is* the
+ * coverage constraint — so relaxed requests fall through.  So does anything
+ * else the engine cannot handle (no wasm, encoding refused): the caller still
+ * gets an answer from the search below.
+ */
+function solveSatAttempt(req: SolveRequest): SolveResult | null {
+  if (req.sat === false || !req.requireFull) return null;
+  const r = satSolve({ n: req.n, edges: req.edges, pairs: req.pairs }, Math.max(1, req.maxSolutions));
+  if (r.status === "unavailable") return null;
+  const out: SolveResult = {
+    solutions: r.solutions,
+    nodes: r.conflicts,
+    ms: r.ms,
+    timedOut: false,
+    attempts: 1,
+    engine: "sat",
+    cuts: r.cuts,
+  };
+  if (req.trace && r.solutions.length) out.trace = spreadTrace(r.solutions[0]);
+  return out;
+}
+
+/**
+ * A SAT answer arrives as whole paths, with no growth order attached.  Replaying
+ * the colours round-robin one vertex at a time is not how the solver found it,
+ * but it is how a human would draw it, which is the point of the playback.
+ */
+function spreadTrace(paths: number[][]): [number, number][] {
+  const out: [number, number][] = [];
+  const longest = paths.reduce((m, p) => Math.max(m, p.length), 0);
+  for (let i = 1; i < longest; i++) {
+    for (let c = 0; c < paths.length; c++) {
+      if (i < paths[c].length) out.push([c, paths[c][i]]);
+    }
+  }
+  return out;
+}
+
 export function solve(req: SolveRequest): SolveResult {
+  const s = solveSatAttempt(req);
+  if (s) return s;
   const restarts = req.restarts ?? 0;
-  if (restarts > 0) return solveRestarting(req, restarts);
-  return solveOnce(req, req.timeLimitMs, 0);
+  if (restarts > 0) return { ...solveRestarting(req, restarts), engine: "dfs" };
+  return { ...solveOnce(req, req.timeLimitMs, 0), engine: "dfs" };
 }
 
 function mulberry32(seed: number): () => number {

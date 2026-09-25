@@ -5,7 +5,15 @@ import SolverWorker from "./solver.worker.ts?worker&inline";
 import { drawScene, fitView, latticeBounds, type Scene, type View } from "./render";
 import { DEFAULT_VISION, extractPuzzle, type VisionParams } from "./vision";
 import { nodeColor, PALETTE, type Puzzle } from "./types";
-import { solve, type SolveRequest, type WorkerRequest, type WorkerResponse } from "./solver";
+import {
+  solve,
+  type SolveRequest,
+  type WorkerInit,
+  type WorkerRequest,
+  type WorkerResponse,
+} from "./solver";
+import { satSetBinary } from "./sat";
+import { SAT_WASM_BASE64 } from "./sat.wasm";
 
 type Tool = "pan" | "move" | "add" | "del" | "link" | "color";
 
@@ -96,7 +104,13 @@ const state = {
   solution: null as number[][] | null,
   /** How the winning solution was grown, step by step, for the algorithm demo. */
   trace: null as [number, number][] | null,
-  stats: null as { nodes: number; ms: number; attempts: number } | null,
+  stats: null as {
+    nodes: number;
+    ms: number;
+    attempts: number;
+    engine?: "sat" | "dfs";
+    cuts?: number;
+  } | null,
   busy: false,
   job: 0,
   lastR: 26,
@@ -712,6 +726,10 @@ let worker: Worker | null = null;
 let workerBroken = false;
 const pending = new Map<number, Job>();
 
+// The inline path — a file:// page cannot start a worker at all — needs the
+// engine too, so seed it here whether or not a worker ever comes up.
+satSetBinary(SAT_WASM_BASE64);
+
 function runInline(req: SolveRequest, id: number): WorkerResponse {
   try {
     return { id, ...solve(req) };
@@ -733,6 +751,9 @@ function getWorker(): Worker | null {
   if (worker) return worker;
   try {
     const w = new SolverWorker();
+    // The engine is 60 kB of wasm held here as base64; the worker gets a copy
+    // by message so the bundle only carries one.
+    w.postMessage({ wasmB64: SAT_WASM_BASE64 } satisfies WorkerInit);
     w.onmessage = (ev: MessageEvent<WorkerResponse>) => {
       const job = pending.get(ev.data.id);
       if (job) {
@@ -808,8 +829,11 @@ async function solveNow() {
       res.timedOut
         ? `20s 内没找到解（搜索了 ${res.nodes} 个节点）` +
           `\n先核对识别结果（点数/边数/颜色配对）；也可取消「必须覆盖所有点」再试`
-        : `无解（搜索了 ${res.nodes} 个节点，${res.ms}ms）` +
-          `\n真实关卡不会无解，优先怀疑识别`,
+        : res.engine === "sat"
+          ? `无解（SAT 已证明，${res.nodes} 次冲突，${res.ms}ms）` +
+            `\n真实关卡不会无解，优先怀疑识别结果`
+          : `无解（搜索了 ${res.nodes} 个节点，${res.ms}ms）` +
+            `\n真实关卡不会无解，优先怀疑识别`,
       "warn",
     );
     return;
@@ -818,13 +842,22 @@ async function solveNow() {
   // show the answer immediately, then verify uniqueness in the background
   state.solution = res.solutions[0];
   state.trace = res.trace ?? null;
-  state.stats = { nodes: res.nodes, ms: res.ms, attempts: res.attempts ?? 1 };
+  state.stats = {
+    nodes: res.nodes,
+    ms: res.ms,
+    attempts: res.attempts ?? 1,
+    engine: res.engine,
+    cuts: res.cuts ?? 0,
+  };
   cbOverlay.checked = false;
   redraw();
   if (isPhone()) setPanelOpen(false); // the sheet covers the whole canvas
   const covered = res.solutions[0].reduce((s, p) => s + p.length, 0);
   const headline = `求解成功：覆盖 ${covered}/${total} 个点`;
-  const detail = `${res.nodes} 个搜索节点 · ${res.ms}ms`;
+  const detail =
+    res.engine === "sat"
+      ? `SAT 求解 · ${res.nodes} 次冲突${res.cuts ? ` · ${res.cuts} 次割` : ""} · ${res.ms}ms`
+      : `DFS 搜索 · ${res.nodes} 个搜索节点 · ${res.ms}ms`;
 
   if (!cbUniq.checked) {
     state.busy = false;
@@ -1000,14 +1033,27 @@ function renderStats() {
   const groups = pairGroups().size;
   const rows: [string, string][] = [
     ["棋盘", `${p.nodes.length} 个点 · ${p.edges.length} 条边 · ${groups} 组颜色`],
-    ["搜索节点", state.stats ? String(state.stats.nodes) : "—"],
+    [
+      "求解引擎",
+      state.stats
+        ? state.stats.engine === "sat"
+          ? `SAT（wasm）${state.stats.cuts ? ` · ${state.stats.cuts} 次割` : ""}`
+          : "DFS 搜索"
+        : "—",
+    ],
+    [
+      state.stats?.engine === "sat" ? "冲突次数" : "搜索节点",
+      state.stats ? String(state.stats.nodes) : "—",
+    ],
     ["耗时", state.stats ? `${state.stats.ms} ms` : "—"],
     [
       "颜色顺序",
       state.stats
-        ? state.stats.attempts === 1
-          ? "第 1 次命中"
-          : `第 ${state.stats.attempts} 次才命中（前几次都放弃了）`
+        ? state.stats.engine === "sat"
+          ? "不适用（SAT 不做颜色排序）"
+          : state.stats.attempts === 1
+            ? "第 1 次命中"
+            : `第 ${state.stats.attempts} 次才命中（前几次都放弃了）`
         : "—",
     ],
     [

@@ -39,13 +39,43 @@ When a board fails, it is retried with the colours renumbered. The shape of the
 search tree depends almost entirely on the order of the colours — not on the vertex
 numbering, and not on the order moves are tried.
 
+### The SAT engine
+
+The search above runs out on some boards: a 64-point triangle lattice goes past two
+million nodes without finishing. So the solver first tries SAT, and only falls back
+to the search when SAT does not apply.
+
+The encoding has two variable families — `x[w][c]` for "point `w` carries colour `c`"
+and `y[j]` for "edge `j` is used" — instead of one variable per (edge, colour) pair.
+Putting the degree cap on `y` alone keeps it at `C(d, 3)` clauses per point rather
+than `C(k·d, 3)`; a real board is about 1.1k variables and 8.3k clauses instead of
+1.2M. Degree plus colour agreement already force every colour's subgraph to be paths
+and pure cycles, so the only thing left is to rule out a cycle, done by solving again
+with a cut for each one found. Real boards need none.
+
+The solver is [batsat](https://crates.io/crates/batsat) in `sat/`, compiled to
+WebAssembly. It has no imports, so it is carried in the bundle as base64 and works on
+a `file://` page too. The same board that defeats the search solves in about 9 ms.
+
+SAT also answers the uniqueness question exactly: the `y` variables *are* the edge
+set, so forbidding one assignment and re-solving proves there is no second answer —
+no need to compare paths by hand.
+
 ## Development
 
 ```bash
 npm install
 npm run dev      # dev server
 npm run build    # type-check and build to dist/
-npm test         # solver unit tests
+npm test         # solver, vision and SAT unit tests
+```
+
+Everything above needs only Node. Regenerating the SAT engine is the one thing that
+needs Rust — the built wasm is committed as `src/sat.wasm.ts`, so nobody else has to:
+
+```bash
+rustup target add wasm32-unknown-unknown
+npm run sat:build   # sat/ -> src/sat.wasm.ts
 ```
 
 `python/` holds a command-line version managed by [uv](https://docs.astral.sh/uv/),
