@@ -98,12 +98,18 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
     pairs: g.pairs.map((p) => [p[0], p[1]]),
     requireFull: true,
     maxSolutions: 1,
-    timeLimitMs: 3000,
+    timeLimitMs: 2000,
     sat: false,
   };
   const r = await solve(req);
   assert.equal(r.engine, "dfs", "sat:false uses the search");
-  console.log(`ok  ${"dfs-fallback".padEnd(26)} -> ${r.engine}, ${r.nodes} nodes, ${r.ms}ms`);
+  // This board is why the SAT engine exists: the search needs ~2.5M nodes
+  // (~26s here) to crack it, against ~170k reachable in 2s, and the solver
+  // answers it in 9 conflicts.  The margin is wide, but it is wall-clock, so
+  // a failure here means "re-measure", not necessarily "broken".
+  assert.equal(r.timedOut, true, "board 2 outruns the search budget");
+  assert.equal(r.solutions.length, 0, "and yields nothing within it");
+  console.log(`ok  ${"dfs-fallback".padEnd(26)} -> ${r.engine}, ${r.nodes} nodes, timed out`);
   pass++;
 }
 
