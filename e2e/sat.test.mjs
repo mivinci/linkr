@@ -49,7 +49,7 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
   const edges = g.edges.map((e) => [e[0], e[1]]);
   const pairs = g.pairs.map((p) => [p[0], p[1]]);
 
-  const r = satSolve({ n, edges, pairs }, 1);
+  const r = await satSolve({ n, edges, pairs }, 1);
   assert.equal(r.status, "sat", `${file}: ${r.status} ${r.error ?? ""}`);
   assert.ok(r.solutions.length >= 1, `${file}: got a solution`);
   assertValid(g, r.solutions[0]);
@@ -69,7 +69,7 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
     edges: [[0, 1], [1, 3], [3, 2], [2, 0]],
     pairs: [[0, 3], [1, 2]],
   };
-  const r = satSolve(g, 1);
+  const r = await satSolve(g, 1);
   assert.equal(r.status, "unsat", "crossing 4-cycle is unsatisfiable");
   console.log(`ok  ${"unsat-crossing".padEnd(26)} -> UNSAT ${r.ms}ms`);
   pass++;
@@ -78,7 +78,7 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
 // Board 1 is claimed unique; asking for two must come back with exactly one.
 {
   const g = JSON.parse(readFileSync(path.join(fixtures, "board1-square96.json"), "utf8"));
-  const r = satSolve(
+  const r = await satSolve(
     { n: g.dots.length, edges: g.edges.map((e) => [e[0], e[1]]), pairs: g.pairs.map((p) => [p[0], p[1]]) },
     2,
   );
@@ -101,7 +101,7 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
     timeLimitMs: 3000,
     sat: false,
   };
-  const r = solve(req);
+  const r = await solve(req);
   assert.equal(r.engine, "dfs", "sat:false uses the search");
   console.log(`ok  ${"dfs-fallback".padEnd(26)} -> ${r.engine}, ${r.nodes} nodes, ${r.ms}ms`);
   pass++;
@@ -130,14 +130,14 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
     trace: true,
   });
 
-  const easy = solve(demo(load("board1-square96.json")));
+  const easy = await solve(demo(load("board1-square96.json")));
   assert.equal(easy.engine, "dfs", "board 1: the search is fast enough to keep a real trace");
   assert.ok(easy.trace && easy.trace.length > 0, "board 1: trace recorded");
   assert.equal(easy.syntheticTrace, undefined, "board 1: trace is not a replay");
   console.log(`ok  ${"schedule-easy".padEnd(26)} -> dfs, ${easy.nodes} nodes, ${easy.ms}ms, real trace`);
   pass++;
 
-  const hard = solve(demo(load("board2-triangle64.json")));
+  const hard = await solve(demo(load("board2-triangle64.json")));
   assert.equal(hard.engine, "sat", "board 2: search gives up, SAT takes over");
   assert.equal(hard.syntheticTrace, true, "board 2: trace is flagged as a replay");
   console.log(`ok  ${"schedule-hard".padEnd(26)} -> sat, ${hard.nodes} conflicts, ${hard.ms}ms, replay`);
@@ -145,7 +145,7 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
 
   // Uniqueness carries no trace, so it goes straight to SAT even on an easy
   // board — that is the part that turns into a proof instead of a timeout.
-  const uniq = solve({
+  const uniq = await solve({
     ...load("board1-square96.json"),
     requireFull: true,
     maxSolutions: 2,
@@ -156,6 +156,79 @@ for (const file of ["board1-square96.json", "board2-triangle64.json"]) {
   assert.equal(uniq.engine, "sat", "uniqueness always runs on SAT");
   assert.equal(uniq.solutions.length, 1, "board 1 is unique");
   console.log(`ok  ${"schedule-uniqueness".padEnd(26)} -> sat, 1 solution, ${uniq.ms}ms`);
+  pass++;
+}
+
+// ------------------------------------------------- interruption
+// A board nothing can decide is the reason the engine needs limits at all:
+// without them this call never returns, and on a file:// page the solver runs
+// on the main thread, so the whole page dies with it.
+{
+  const hard = JSON.parse(readFileSync(path.join(fixtures, "hard-square400.json"), "utf8"));
+  const g = { n: hard.n, edges: hard.edges, pairs: hard.pairs };
+
+  const t = Date.now();
+  const r = await satSolve(g, 1, 64, { deadlineMs: 800 });
+  const wall = Date.now() - t;
+  assert.equal(r.status, "unknown", "a board neither engine can decide must come back unknown");
+  assert.ok(r.conflicts > 0, "and report how far it got");
+  assert.ok(wall < 800 + 1200, `gave up within the budget: ${wall}ms`);
+  console.log(`ok  ${"deadline".padEnd(26)} -> unknown, ${r.conflicts} conflicts, ${wall}ms wall`);
+  pass++;
+
+  // A cancel has to land between chunks, not at the end of the search.
+  const stopAt = Date.now() + 300;
+  const seen = [];
+  const t2 = Date.now();
+  const c = await satSolve(g, 1, 64, {
+    deadlineMs: 60000,
+    shouldStop: () => Date.now() >= stopAt,
+    onProgress: (n) => seen.push(n),
+  });
+  const wall2 = Date.now() - t2;
+  assert.equal(c.status, "unknown", "shouldStop interrupts the search");
+  assert.ok(wall2 < 2000, `cancelled promptly: ${wall2}ms`);
+  assert.ok(seen.length >= 1, "progress was reported between chunks");
+  for (let i = 1; i < seen.length; i++)
+    assert.ok(seen[i] >= seen[i - 1], "conflict count does not go backwards");
+  console.log(`ok  ${"cancel".padEnd(26)} -> unknown, ${seen.length} chunks, ${wall2}ms wall`);
+  pass++;
+
+  // Chunking must not change an answer: force a chunk every ~1 ms.
+  for (const f of ["board1-square96.json", "board2-triangle64.json"]) {
+    const b = JSON.parse(readFileSync(path.join(fixtures, f), "utf8"));
+    const whole = await satSolve(
+      { n: b.dots.length, edges: b.edges.map((e) => [e[0], e[1]]), pairs: b.pairs.map((p) => [p[0], p[1]]) },
+      1,
+    );
+    const sliced = await satSolve(
+      { n: b.dots.length, edges: b.edges.map((e) => [e[0], e[1]]), pairs: b.pairs.map((p) => [p[0], p[1]]) },
+      1,
+      64,
+      { chunkMs: 1 },
+    );
+    assert.equal(sliced.status, whole.status, `${f}: chunking changed the verdict`);
+    assert.deepEqual(sliced.solutions, whole.solutions, `${f}: chunking changed the answer`);
+    console.log(`ok  ${`chunked-${f.split("-")[0]}`.padEnd(26)} -> ${sliced.status}, ${sliced.conflicts} conflicts`);
+    pass++;
+  }
+
+  // `solve` must not hand an undecided board to the DFS: if SAT could not
+  // decide it in ten seconds the search will not decide it in twenty either.
+  const { solve } = await import("../src/solver.ts");
+  const r2 = await solve({
+    ...g,
+    requireFull: true,
+    maxSolutions: 1,
+    timeLimitMs: 5000,
+    restarts: 4,
+    nodeBudget: 12000,
+    satTimeLimitMs: 700,
+  });
+  assert.equal(r2.engine, "sat", "an undecided board stays with the engine that tried");
+  assert.equal(r2.timedOut, true, "and is reported as undecided, not as unsolvable");
+  assert.equal(r2.solutions.length, 0, "with no answer attached");
+  console.log(`ok  ${"no-dfs-fallback".padEnd(26)} -> ${r2.engine}, timedOut, ${r2.nodes} conflicts`);
   pass++;
 }
 

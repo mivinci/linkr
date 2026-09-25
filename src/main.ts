@@ -7,8 +7,11 @@ import { DEFAULT_VISION, extractPuzzle, type VisionParams } from "./vision";
 import { nodeColor, PALETTE, type Puzzle } from "./types";
 import {
   solve,
+  type SolveHooks,
   type SolveRequest,
+  type WorkerCancel,
   type WorkerInit,
+  type WorkerProgress,
   type WorkerRequest,
   type WorkerResponse,
 } from "./solver";
@@ -50,8 +53,10 @@ const btnJson = document.querySelector<HTMLButtonElement>("#btn-json")!;
 const emptyEl = document.querySelector<HTMLElement>("#empty")!;
 
 function setBusy(busy: boolean) {
-  btnSolve.disabled = busy;
-  btnSolveM.disabled = busy;
+  // While a job runs the button stays live and becomes the way out of it.
+  const label = busy ? "取消" : "求解";
+  btnSolve.textContent = label;
+  btnSolveM.textContent = label;
 }
 
 /**
@@ -114,10 +119,20 @@ const state = {
     cuts?: number;
   } | null,
   busy: false,
+  /** The user asked to drop the job in flight. */
+  cancelRequested: false,
   job: 0,
   lastR: 26,
   spaceDown: false,
 };
+
+/** End the job in flight: clear the flag, restore the buttons. */
+function finishJob(): void {
+  state.busy = false;
+  state.cancelRequested = false;
+  clearCancelBackstop();
+  setBusy(false);
+}
 
 /** First line is the verdict, every following line is supporting detail. */
 function setStatus(text: string, kind: "" | "ok" | "warn" | "err" = "") {
@@ -726,18 +741,31 @@ interface Job {
 
 let worker: Worker | null = null;
 let workerBroken = false;
+let cancelTimer = 0;
 const pending = new Map<number, Job>();
 
 // The inline path — a file:// page cannot start a worker at all — needs the
 // engine too, so seed it here whether or not a worker ever comes up.
 satSetBinary(SAT_WASM_BASE64);
 
-function runInline(req: SolveRequest, id: number): WorkerResponse {
+async function runInline(req: SolveRequest, id: number): Promise<WorkerResponse> {
   try {
-    return { id, ...solve(req) };
+    return { id, ...(await solve(req, inlineHooks())) };
   } catch (err) {
     return { id, solutions: [], nodes: 0, ms: 0, timedOut: false, error: String(err) };
   }
+}
+
+/**
+ * The `file://` build has no worker, so the solver runs on this thread.  The
+ * hooks are what keep that usable: `solve` yields between SAT chunks, which is
+ * the only reason the page can still paint or notice a cancel.
+ */
+function inlineHooks(): SolveHooks {
+  return {
+    shouldStop: () => state.cancelRequested,
+    onProgress: (conflicts) => setStatus(`求解中…\nSAT 已 ${conflicts} 次冲突`),
+  };
 }
 
 function fallBackToInline() {
@@ -745,7 +773,7 @@ function fallBackToInline() {
   worker = null;
   const jobs = [...pending.values()];
   pending.clear();
-  for (const job of jobs) job.cb(runInline(job.req, job.id));
+  for (const job of jobs) void runInline(job.req, job.id).then(job.cb);
 }
 
 function getWorker(): Worker | null {
@@ -756,10 +784,15 @@ function getWorker(): Worker | null {
     // The engine is 60 kB of wasm held here as base64; the worker gets a copy
     // by message so the bundle only carries one.
     w.postMessage({ wasmB64: SAT_WASM_BASE64 } satisfies WorkerInit);
-    w.onmessage = (ev: MessageEvent<WorkerResponse>) => {
+    w.onmessage = (ev: MessageEvent<WorkerResponse | WorkerProgress>) => {
+      if ("progress" in ev.data) {
+        setStatus(`求解中…\nSAT 已 ${ev.data.progress} 次冲突`);
+        return;
+      }
       const job = pending.get(ev.data.id);
       if (job) {
         pending.delete(ev.data.id);
+        clearCancelBackstop();
         job.cb(ev.data);
       }
     };
@@ -775,11 +808,45 @@ function getWorker(): Worker | null {
 function runSolver(req: SolveRequest): Promise<WorkerResponse> {
   const id = ++state.job;
   const w = getWorker();
-  if (!w) return Promise.resolve(runInline(req, id));
+  if (!w) return runInline(req, id);
   return new Promise((res) => {
     pending.set(id, { id, req, cb: res });
     w.postMessage({ ...req, id } satisfies WorkerRequest);
   });
+}
+
+/**
+ * Give up on the job in flight.  The cooperative half — a `{cancel}` message
+ * read between SAT chunks — is the one that normally lands; the timer is the
+ * backstop for a chunk that overruns, and the *only* thing that works at all
+ * while the DFS search is running, since that one never yields.
+ */
+function cancelJob(): void {
+  if (cancelTimer) return;
+  state.cancelRequested = true;
+  worker?.postMessage({ cancel: true } satisfies WorkerCancel);
+  cancelTimer = window.setTimeout(() => {
+    cancelTimer = 0;
+    if (!state.busy) return; // the cooperative half already landed
+    const jobs = [...pending.values()];
+    pending.clear();
+    if (worker) {
+      worker.terminate();
+      worker = null;
+    }
+    for (const job of jobs) {
+      job.cb({ id: job.id, solutions: [], nodes: 0, ms: 0, timedOut: true, cancelled: true });
+    }
+    finishJob();
+    setStatus("已取消", "");
+  }, 1500);
+}
+
+function clearCancelBackstop(): void {
+  if (cancelTimer) {
+    clearTimeout(cancelTimer);
+    cancelTimer = 0;
+  }
 }
 
 async function solveNow() {
@@ -798,6 +865,7 @@ async function solveNow() {
   const edges = state.puzzle.edges.map((e) => [e.a, e.b] as [number, number]);
 
   state.busy = true;
+  state.cancelRequested = false;
   setBusy(true);
   setStatus("求解中…");
   const base = {
@@ -819,23 +887,29 @@ async function solveNow() {
     trace: true,
   });
   if (res.error) {
-    state.busy = false;
-    setBusy(false);
+    finishJob();
     setStatus(`求解失败：${res.error}`, "err");
     return;
   }
+  if (res.cancelled) {
+    finishJob();
+    setStatus("已取消", "");
+    return;
+  }
   if (res.solutions.length === 0) {
-    state.busy = false;
-    setBusy(false);
+    finishJob();
     setStatus(
-      res.timedOut
-        ? `20s 内没找到解（搜索了 ${res.nodes} 个节点）` +
-          `\n先核对识别结果（点数/边数/颜色配对）；也可取消「必须覆盖所有点」再试`
-        : res.engine === "sat"
-          ? `无解（SAT 已证明，${res.nodes} 次冲突，${res.ms}ms）` +
-            `\n真实关卡不会无解，优先怀疑识别结果`
-          : `无解（搜索了 ${res.nodes} 个节点，${res.ms}ms）` +
-            `\n真实关卡不会无解，优先怀疑识别`,
+      res.engine === "sat" && res.timedOut
+        ? `SAT ${Math.round(res.ms / 1000)}s 内没判定完（跑了 ${res.nodes} 次冲突）` +
+          `\n这个规模 SAT 都判不动，先核对识别结果（点数/边数/颜色配对）`
+        : res.timedOut
+          ? `20s 内没找到解（搜索了 ${res.nodes} 个节点）` +
+            `\n先核对识别结果（点数/边数/颜色配对）；也可取消「必须覆盖所有点」再试`
+          : res.engine === "sat"
+            ? `无解（SAT 已证明，${res.nodes} 次冲突，${res.ms}ms）` +
+              `\n真实关卡不会无解，优先怀疑识别结果`
+            : `无解（搜索了 ${res.nodes} 个节点，${res.ms}ms）` +
+              `\n真实关卡不会无解，优先怀疑识别`,
       "warn",
     );
     return;
@@ -863,8 +937,7 @@ async function solveNow() {
       : `DFS 搜索 · ${res.nodes} 个搜索节点 · ${res.ms}ms`;
 
   if (!cbUniq.checked) {
-    state.busy = false;
-    setBusy(false);
+    finishJob();
     setStatus(`${headline}\n${detail}`, "ok");
     return;
   }
@@ -877,8 +950,11 @@ async function solveNow() {
     restarts: 8,
     nodeBudget: 12000,
   });
-  state.busy = false;
-  setBusy(false);
+  finishJob();
+  if (uniq.cancelled) {
+    setStatus(`${headline}\n已取消唯一性验证\n${detail}`, "");
+    return;
+  }
 
   let distinct = false;
   if (uniq.solutions.length >= 2) {
@@ -901,7 +977,12 @@ async function solveNow() {
   }
 }
 
-document.querySelector<HTMLButtonElement>("#btn-solve")!.addEventListener("click", solveNow);
+for (const b of [btnSolve, btnSolveM]) {
+  b.addEventListener("click", () => {
+    if (state.busy) cancelJob();
+    else void solveNow();
+  });
+}
 cbOverlay.addEventListener("change", redraw);
 btnClearSol.addEventListener("click", () => {
   state.solution = null;

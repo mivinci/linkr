@@ -34,9 +34,26 @@ export const SAT_SAT = 10;
 export const SAT_UNSAT = 20;
 export const SAT_UNKNOWN = 0;
 
+/**
+ * Soft limits on a call.  Without them the engine runs to completion, and on
+ * an instance it cannot crack that means forever: wasm has no clock and no
+ * thread, and JS cannot get a word in while the solver owns the stack.
+ */
+export interface SatLimits {
+  /** Wall-clock budget in ms.  On expiry the result is `unknown`. */
+  deadlineMs?: number;
+  /** Target length of one chunk; the poll budget adapts to hit it. */
+  chunkMs?: number;
+  /** Checked between chunks, so a cancel request can take effect. */
+  shouldStop?: () => boolean;
+  /** Called after every chunk with the cumulative conflict count. */
+  onProgress?: (conflicts: number) => void;
+}
+
 /** One solution: `solutions[i]` is the vertex path of colour i, endpoint first. */
 export interface SatResult {
-  status: "sat" | "unsat" | "unavailable";
+  /** `unknown` — gave up: the deadline passed or `shouldStop` said so. */
+  status: "sat" | "unsat" | "unknown" | "unavailable";
   solutions: number[][][];
   conflicts: number;
   ms: number;
@@ -118,12 +135,62 @@ export function satUnavailableReason(): string | null {
  * previous assignment leaves only genuinely different answers — no need to
  * compare paths modulo reversal.
  */
-export function satSolve(
+/** Ceiling on the poll budget, so a stuck instance cannot grow it forever. */
+const MAX_BUDGET = 0x4000000;
+
+/** Let the event loop turn: a cancel message can only land when the stack unwinds. */
+const yieldNow = () => new Promise<void>((res) => setTimeout(res, 0));
+
+/**
+ * Drive `sat_solve` in chunks short enough that control keeps coming back to
+ * JS.  `sat_budget` caps the search at N budget polls (roughly one per
+ * conflict) and leaves every learnt clause in place, so the next call resumes
+ * where the last one stopped — that is the only way to interrupt a wasm
+ * solver at all.
+ */
+async function solveChunked(
+  e: Exports,
+  limits: SatLimits | undefined,
+  deadlineAt: number,
+): Promise<{ r: number; conflicts: number; gaveUp: boolean }> {
+  const target = Math.max(4, limits?.chunkMs ?? 200);
+  let budget = 1024;
+  for (;;) {
+    const before = Number(e.sat_conflicts());
+    e.sat_budget(budget);
+    const t0 = Date.now();
+    const r = e.sat_solve();
+    if (r !== SAT_UNKNOWN) return { r, conflicts: Number(e.sat_conflicts()), gaveUp: false };
+
+    const conflicts = Number(e.sat_conflicts());
+    limits?.onProgress?.(conflicts);
+    // A budget too small to reach even one conflict makes the search replay
+    // its own decisions forever — it is deterministic and nothing carries
+    // over between calls.  Grow it until it actually moves.
+    if (conflicts === before) {
+      if (budget >= MAX_BUDGET) return { r: SAT_UNKNOWN, conflicts, gaveUp: true };
+      budget *= 8;
+      continue;
+    }
+
+    // Aim `budget` at `target` ms, but move at most 4x per chunk: a single
+    // chunk that measures 1 ms would otherwise scale the budget by 200 and
+    // the next one runs into the deadline instead of stopping at it.
+    const ratio = Math.min(4, Math.max(0.25, target / Math.max(1, Date.now() - t0)));
+    budget = Math.min(MAX_BUDGET, Math.max(256, Math.round(budget * ratio)));
+    await yieldNow();
+    if (Date.now() >= deadlineAt || limits?.shouldStop?.()) {
+      return { r: SAT_UNKNOWN, conflicts: Number(e.sat_conflicts()), gaveUp: true };
+    }
+  }
+}
+
+export async function satSolve(
   g: SatGraph,
   maxSolutions = 1,
   maxCuts = 64,
-  chunkPolls = 0xffffffff,
-): SatResult {
+  limits?: SatLimits,
+): Promise<SatResult> {
   const e = load();
   const empty: SatResult = {
     status: "unavailable",
@@ -136,6 +203,7 @@ export function satSolve(
   if (!e) return empty;
 
   const t0 = Date.now();
+  const deadlineAt = limits?.deadlineMs != null ? t0 + limits.deadlineMs : Infinity;
   const { n, edges, pairs } = g;
   const m = edges.length;
   const k = pairs.length;
@@ -218,26 +286,17 @@ export function satSolve(
     e.sat_reset(nvars);
     for (const cl of clauses) push(cl);
 
-    let r = 0;
-    let budget = chunkPolls;
-    for (;;) {
-      const before = Number(e.sat_conflicts());
-      e.sat_budget(budget);
-      r = e.sat_solve();
-      if (r !== SAT_UNKNOWN || chunkPolls === 0xffffffff) break;
-      // A budget too small to reach even one conflict replays the same
-      // decisions forever: the search is deterministic and nothing carries
-      // over.  Grow until it makes progress.
-      if (Number(e.sat_conflicts()) === before) {
-        budget *= 8;
-        if (budget >= 0x4000000) break;
-      }
-    }
-    const conflicts = Number(e.sat_conflicts());
+    const { r, conflicts, gaveUp } = await solveChunked(e, limits, deadlineAt);
     if (r !== SAT_SAT) {
       // Reaching UNSAT here is only a failure if nothing was found yet; after
       // the first solution it is the proof that there is no second one.
-      status = solutions.length ? "sat" : r === SAT_UNSAT ? "unsat" : "unavailable";
+      status = solutions.length
+        ? "sat"
+        : r === SAT_UNSAT
+          ? "unsat"
+          : gaveUp
+            ? "unknown"
+            : "unavailable";
       return { status, solutions, conflicts, ms: Date.now() - t0, cuts };
     }
 

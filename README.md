@@ -69,6 +69,29 @@ SAT also answers the uniqueness question exactly: the `y` variables *are* the ed
 set, so forbidding one assignment and re-solving proves there is no second answer —
 no need to compare paths by hand.
 
+### Interrupting it
+
+A solver that cannot be stopped is a solver that can hang the page, and on a
+`file://` page the engine runs on the main thread — so a board it cannot crack used
+to take the whole tab with it. wasm has no clock and no thread, and JS cannot get a
+word in while the solver owns the stack, so the engine is driven in *chunks*:
+`sat_budget(n)` caps the search at `n` budget polls (roughly one per conflict) and
+leaves every learnt clause in place, so the next call resumes where the last one
+stopped. Between chunks JS gets the thread back, which is what lets a cancel land
+and the browser paint a frame. On top of that:
+
+- a **10 s deadline** per call, after which the result is `unknown` — not "unsolvable",
+  and not silently handed to the search, which would only burn twenty more seconds;
+- **取消** replaces 求解 while a job runs, and the worker is terminated outright if a
+  chunk runs away;
+- progress is reported as a conflict count, the SAT equivalent of the search's node
+  count.
+
+One trap worth knowing: a budget too small to reach even a single conflict makes the
+search replay its own decisions forever, because it is deterministic and nothing
+carries over. The chunk budget therefore grows until the conflict count actually
+moves.
+
 ## Development
 
 ```bash

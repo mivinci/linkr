@@ -38,6 +38,8 @@ export interface SolveRequest {
   trace?: boolean;
   /** Set false to force the DFS search and skip the SAT engine. */
   sat?: boolean;
+  /** Wall-clock cap for the SAT engine alone.  Default `SAT_TIME_LIMIT_MS`. */
+  satTimeLimitMs?: number;
 }
 
 export interface SolveResult {
@@ -55,6 +57,19 @@ export interface SolveResult {
   cuts?: number;
   /** The trace is a replay of the answer, not a recording of the search. */
   syntheticTrace?: boolean;
+  /** The user called it off. */
+  cancelled?: boolean;
+}
+
+/**
+ * Callbacks `solve` can take but `postMessage` cannot carry, so they live
+ * outside `SolveRequest`: the worker supplies its own.
+ */
+export interface SolveHooks {
+  /** Checked between SAT chunks and, where the search loops, between attempts. */
+  shouldStop?: () => boolean;
+  /** SAT only: cumulative conflict count after each chunk. */
+  onProgress?: (conflicts: number) => void;
 }
 
 /** First message to a fresh worker: hand it the SAT engine. */
@@ -71,6 +86,17 @@ export interface WorkerResponse extends SolveResult {
   error?: string;
 }
 
+/** Drop the in-flight job at the next SAT chunk boundary. */
+export interface WorkerCancel {
+  cancel: true;
+}
+
+/** Unsolicited mid-job note: how far the SAT engine has got. */
+export interface WorkerProgress {
+  id: number;
+  progress: number;
+}
+
 /**
  * Try the SAT engine first.  It is complete and finishes real boards in
  * milliseconds, so when it applies there is nothing to gain from the DFS.  It
@@ -79,18 +105,29 @@ export interface WorkerResponse extends SolveResult {
  * else the engine cannot handle (no wasm, encoding refused): the caller still
  * gets an answer from the search below.
  */
-function solveSatAttempt(req: SolveRequest): SolveResult | null {
+/** How long the SAT engine gets before it has to admit it does not know. */
+export const SAT_TIME_LIMIT_MS = 10_000;
+
+async function solveSatAttempt(req: SolveRequest, hooks?: SolveHooks): Promise<SolveResult | null> {
   if (req.sat === false || !req.requireFull) return null;
-  const r = satSolve({ n: req.n, edges: req.edges, pairs: req.pairs }, Math.max(1, req.maxSolutions));
+  const r = await satSolve({ n: req.n, edges: req.edges, pairs: req.pairs }, Math.max(1, req.maxSolutions), 64, {
+    deadlineMs: req.satTimeLimitMs ?? SAT_TIME_LIMIT_MS,
+    shouldStop: hooks?.shouldStop,
+    onProgress: hooks?.onProgress,
+  });
+  // `unknown` is not a failure of the engine, so it must not quietly hand the
+  // board to the search: if SAT could not decide it in ten seconds, the search
+  // will not decide it in twenty either.
   if (r.status === "unavailable") return null;
   const out: SolveResult = {
     solutions: r.solutions,
     nodes: r.conflicts,
     ms: r.ms,
-    timedOut: false,
+    timedOut: r.status === "unknown",
     attempts: 1,
     engine: "sat",
     cuts: r.cuts,
+    cancelled: r.status === "unknown" && (hooks?.shouldStop?.() ?? false) ? true : undefined,
   };
   if (req.trace && r.solutions.length) {
     out.trace = spreadTrace(r.solutions[0]);
@@ -141,10 +178,10 @@ function spreadTrace(paths: number[][]): [number, number][] {
   return out;
 }
 
-export function solve(req: SolveRequest): SolveResult {
+export async function solve(req: SolveRequest, hooks?: SolveHooks): Promise<SolveResult> {
   const demo = solveForDemo(req);
   if (demo) return demo;
-  const s = solveSatAttempt(req);
+  const s = await solveSatAttempt(req, hooks);
   if (s) return s;
   const restarts = req.restarts ?? 0;
   if (restarts > 0) return { ...solveRestarting(req, restarts), engine: "dfs" };
