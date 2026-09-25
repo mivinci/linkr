@@ -1011,7 +1011,9 @@ function renderModal() {
   if (!tr) {
     demoNote.textContent = "还没有解，先点「求解」再看过程";
   } else if (upto === 0) {
-    demoNote.textContent = "起点：每条路径站在自己的端点上，还没开始生长";
+    demoNote.textContent = state.traceSynthetic
+      ? "起点：每条路径站在自己的端点上"
+      : "起点：每条路径站在自己的端点上，还没开始生长";
   } else {
     const [c, v] = tr[upto - 1];
     const label = gridLabels();
@@ -1035,14 +1037,19 @@ function renderModal() {
 }
 
 const algoLead = document.querySelector<HTMLElement>("#algo-lead")!;
+const algoDfs = document.querySelector<HTMLElement>("#algo-dfs")!;
+const algoSat = document.querySelector<HTMLElement>("#algo-sat")!;
 
 /**
  * The demo advertises the solver's own derivation, which is only true when the
  * search produced the answer.  SAT decides variables and never walks a path, so
- * for those boards the identical animation is a replay of the answer.  Say which
- * one it is rather than letting the lead paragraph claim the wrong thing.
+ * for those boards the identical animation is a replay of the answer — and the
+ * walkthrough underneath has to describe the engine that actually ran, not the
+ * one that didn't.
  */
 function renderAlgoLead(): void {
+  algoDfs.hidden = state.traceSynthetic;
+  algoSat.hidden = !state.traceSynthetic;
   algoLead.innerHTML = state.traceSynthetic
     ? "这一道题是 <b>SAT 解出的</b>：它判定变量，不长路径，所以没有“实际生长顺序”可以重放。" +
       "下面是<b>答案本身的回放</b> —— 按颜色轮转铺开，看起来像推导，其实不是。" +
