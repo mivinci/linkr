@@ -12,7 +12,10 @@
 
 #![allow(static_mut_refs)]
 
-use batsat::{lbool, BasicSolver, Lit, SolverInterface, Var};
+use batsat::{
+  callbacks::Basic as BasicCallbacks, lbool, BasicSolver, Lit, Solver, SolverInterface, SolverOpts,
+  Var,
+};
 
 /// Solver state.  Single-threaded wasm, so a mutable static is fine.
 static mut SOLVER: Option<BasicSolver> = None;
@@ -22,6 +25,11 @@ static mut BUF: Vec<i32> = Vec::new();
 static mut MODEL: Vec<i32> = Vec::new();
 /// Set when a clause made the instance trivially unsatisfiable.
 static mut DEAD: bool = false;
+/// Budget for the next `sat_solve`, in `within_budget()` polls.  `u32::MAX`
+/// runs to completion.
+static mut BUDGET: u32 = u32::MAX;
+/// Polls spent since the last `sat_budget`.
+static mut SPENT: u32 = 0;
 
 pub const SAT: i32 = 10;
 pub const UNSAT: i32 = 20;
@@ -31,7 +39,19 @@ pub const UNKNOWN: i32 = 0;
 #[no_mangle]
 pub extern "C" fn sat_reset(nvars: u32) {
   unsafe {
-    let mut s = BasicSolver::default();
+    // `stop()` is folded into `within_budget()`, which the search consults
+    // once per conflict, so a poll counter is all the interruption we need:
+    // wasm has no threads and no clock, and JS cannot get in while the
+    // solver owns the stack.
+    let mut cb = BasicCallbacks::new();
+    cb.set_stop(|| {
+      if BUDGET == u32::MAX {
+        return false;
+      }
+      SPENT += 1;
+      SPENT >= BUDGET
+    });
+    let mut s: BasicSolver = Solver::new(SolverOpts::default(), cb);
     for _ in 0..nvars {
       s.new_var_default();
     }
@@ -76,6 +96,18 @@ pub extern "C" fn sat_add(len: u32) -> i32 {
     } else {
       1
     }
+  }
+}
+
+/// Cap the next `sat_solve` at `polls` budget checks — roughly one per
+/// conflict.  On exhaustion it returns 0 and the search keeps everything it
+/// has learnt, so calling `sat_solve` again resumes it.  `u32::MAX` (the
+/// default) runs to completion.
+#[no_mangle]
+pub extern "C" fn sat_budget(polls: u32) {
+  unsafe {
+    BUDGET = polls;
+    SPENT = 0;
   }
 }
 

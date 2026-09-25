@@ -51,6 +51,7 @@ interface Exports {
   sat_buf(len: number): number;
   sat_add(len: number): number;
   sat_solve(): number;
+  sat_budget(polls: number): void;
   sat_model_ptr(): number;
   sat_model_len(): number;
   sat_conflicts(): number;
@@ -117,7 +118,12 @@ export function satUnavailableReason(): string | null {
  * previous assignment leaves only genuinely different answers — no need to
  * compare paths modulo reversal.
  */
-export function satSolve(g: SatGraph, maxSolutions = 1, maxCuts = 64): SatResult {
+export function satSolve(
+  g: SatGraph,
+  maxSolutions = 1,
+  maxCuts = 64,
+  chunkPolls = 0xffffffff,
+): SatResult {
   const e = load();
   const empty: SatResult = {
     status: "unavailable",
@@ -212,7 +218,21 @@ export function satSolve(g: SatGraph, maxSolutions = 1, maxCuts = 64): SatResult
     e.sat_reset(nvars);
     for (const cl of clauses) push(cl);
 
-    const r = e.sat_solve();
+    let r = 0;
+    let budget = chunkPolls;
+    for (;;) {
+      const before = Number(e.sat_conflicts());
+      e.sat_budget(budget);
+      r = e.sat_solve();
+      if (r !== SAT_UNKNOWN || chunkPolls === 0xffffffff) break;
+      // A budget too small to reach even one conflict replays the same
+      // decisions forever: the search is deterministic and nothing carries
+      // over.  Grow until it makes progress.
+      if (Number(e.sat_conflicts()) === before) {
+        budget *= 8;
+        if (budget >= 0x4000000) break;
+      }
+    }
     const conflicts = Number(e.sat_conflicts());
     if (r !== SAT_SAT) {
       // Reaching UNSAT here is only a failure if nothing was found yet; after
