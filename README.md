@@ -96,10 +96,26 @@ moves.
 
 ```bash
 npm install
-npm run dev      # dev server
-npm run build    # type-check and build to dist/
-npm test         # solver, vision and SAT unit tests
+npm run dev        # dev server
+npm run build      # type-check and build to dist/
+npm run test:unit  # solver, vision and SAT unit tests
+npm test           # the above, plus the browser smoke test
 ```
+
+`npm test` drives the built app in a headless browser over every screenshot in
+`e2e/screenshots/`, and checks that each one is detected into the graph frozen in
+the matching `e2e/fixtures/*.json`. Unit tests only ever see synthetic masks, so
+this is the only guard on the vision half against a real photo. It needs a
+browser — `CHROME_PATH`, or `npx playwright install chromium`.
+
+To re-freeze a fixture after a deliberate detector change:
+
+```bash
+FREEZE=1 node e2e/smoke.mjs <url> e2e/screenshots/board1-square96.png
+```
+
+Positions are compared after normalising to the bounding box, with a two-unit
+tolerance: the same board at another `MAX_SIDE` is still the same board.
 
 Everything above needs only Node. Regenerating the SAT engine is the one thing that
 needs Rust — the built wasm is committed as `src/sat.wasm.ts`, so nobody else has to:

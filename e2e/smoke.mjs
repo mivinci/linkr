@@ -4,7 +4,7 @@
  *   node e2e/smoke.mjs <url> <image> [outdir]
  */
 import { chromium } from "playwright-core";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -13,12 +13,26 @@ const image = process.argv[3];
 const outDir = process.argv[4] ?? "e2e/out";
 mkdirSync(outDir, { recursive: true });
 
-const exe =
-  process.env.CHROME_PATH ??
+// Local override, then the playwright cache, then whatever the runner has.
+// CI images ship Google Chrome, so `npm test` needs no browser download.
+const candidates = [
+  process.env.CHROME_PATH,
   path.join(
     homedir(),
     "Library/Caches/ms-playwright/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  ),
+  path.join(homedir(), ".cache/ms-playwright/chromium-1208/chrome-linux64/chrome"),
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium-browser",
+  "/usr/bin/chromium",
+];
+const exe = candidates.find((p) => p && existsSync(p));
+if (!exe) {
+  console.error(
+    "FAIL: no browser. Set CHROME_PATH, or run `npx playwright install chromium`.",
   );
+  process.exit(1);
+}
 
 const fail = (msg) => {
   console.error("FAIL:", msg);
@@ -56,7 +70,12 @@ const g = await page.evaluate(() => {
     edges: p.edges.length,
     pairs: [...byPair.entries()].sort((a, b) => a[0] - b[0]),
     radii: [...new Set(p.nodes.map((n) => Math.round(n.r)))].sort((a, b) => a - b),
-    nodeList: p.nodes.map((n) => ({ x: Math.round(n.x), y: Math.round(n.y), rgb: n.rgb })),
+    nodeList: p.nodes.map((n) => ({
+      x: Math.round(n.x),
+      y: Math.round(n.y),
+      r: Math.round(n.r),
+      rgb: n.rgb,
+    })),
   };
 });
 console.log("graph:", JSON.stringify({ nodes: g.nodes, edges: g.edges }));
@@ -96,6 +115,125 @@ const lonely = deg.filter((d) => d === 0).length;
 if (lonely) fail(`${lonely} isolated dots — a real edge was rejected`);
 if (detectStatus.includes("需要人工校对") || detectStatus.includes("没连上任何边"))
   fail(`detector reported problems: ${detectStatus}`);
+
+// The frozen fixture is the regression test for the *vision* half.  Unit tests
+// only see synthetic masks, so without this a detector regression on a real
+// screenshot — the exact thing these two boards were sent in for — shows up as
+// a bug report instead of a red test.  Indices depend on scan order, so both
+// sides are canonicalised by (y, x) before comparing.
+const fixturePath = image.replace(/[/\\]screenshots[/\\]/, "/fixtures/").replace(/\.\w+$/, ".json");
+if (existsSync(fixturePath)) {
+  const canon = (nodes, edges, pairs) => {
+    // Sort on the rounded grid, not the raw floats: the fixture keeps the
+    // sub-pixel coordinates the detector produced, and a y of 866.4 vs the
+    // rounded 867 will swap two rows otherwise.
+    const px = nodes.map((n) => Math.round(n.x));
+    const py = nodes.map((n) => Math.round(n.y));
+    const order = nodes
+      .map((_, i) => i)
+      .sort((a, b) => py[a] - py[b] || px[a] - px[b] || a - b);
+    const rank = new Map(order.map((v, i) => [v, i]));
+    const key = (a, b) => {
+      const x = rank.get(a);
+      const y = rank.get(b);
+      return x < y ? `${x}-${y}` : `${y}-${x}`;
+    };
+    // Positions are normalised to the bounding box: the same screenshot at
+    // another `MAX_SIDE` is the same board, and the test should say so.
+    const span = Math.max(...px, ...py) || 1;
+    return {
+      dots: order.map((i) => [
+        Math.round((px[i] * 1000) / span),
+        Math.round((py[i] * 1000) / span),
+        Math.round((Math.round(nodes[i].r) * 1000) / span),
+      ]),
+      edges: edges.map(([a, b]) => key(a, b)).sort(),
+      pairs: pairs.map(([a, b]) => key(a, b)).sort(),
+    };
+  };
+  const f = JSON.parse(readFileSync(fixturePath, "utf8"));
+  const want = canon(
+    f.dots.map((d) => ({ x: d.x, y: d.y, r: d.r })),
+    f.edges,
+    f.pairs,
+  );
+  const got = canon(g.nodeList, edgeList, g.pairs.map(([, v]) => v));
+  const diff = [];
+  // Dot centres land on float pixels, so a coordinate can round a unit either
+  // way between runs.  TOL is ~2/1000 of the board, against a dot pitch of
+  // ~50: enough to absorb jitter, nowhere near enough to hide a shifted row.
+  const TOL = 2;
+  const drift = (a, b) => a.some((v, k) => Math.abs(v - b[k]) > TOL);
+  if (want.dots.length !== got.dots.length) {
+    diff.push(`dots ${got.dots.length} vs ${want.dots.length}`);
+  } else {
+    const i = want.dots.findIndex((d, j) => drift(d, got.dots[j]));
+    if (i >= 0)
+      diff.push(
+        `dot @${i} moved: got ${got.dots[i].join(",")} want ${want.dots[i].join(",")} (tol ${TOL})`,
+      );
+  }
+  if (String(want.edges) !== String(got.edges)) {
+    const i = want.edges.findIndex((d, j) => d !== got.edges[j]);
+    diff.push(`edges ${got.edges.length} vs ${want.edges.length}, first mismatch @${i}: got ${got.edges[i]} want ${want.edges[i]}`);
+  }
+  if (String(want.pairs) !== String(got.pairs)) diff.push(`colour pairs differ\n    want ${want.pairs.join(" ")}\n    got  ${got.pairs.join(" ")}`);
+  if (diff.length) fail(`detected graph drifted from ${path.basename(fixturePath)}: ${diff.join(", ")}`);
+  else console.log(`fixture: matches ${path.basename(fixturePath)}`);
+}
+
+// FREEZE=1 rewrites the fixture from what the detector just produced.  Only do
+// it on purpose: this is the baseline the check above guards.
+if (process.env.FREEZE) {
+  const p = await page.evaluate(() => {
+    const s = window.__nl.state.puzzle;
+    const byPair = new Map();
+    s.nodes.forEach((n, i) => {
+      if (n.pair === null) return;
+      byPair.set(n.pair, [...(byPair.get(n.pair) ?? []), i]);
+    });
+    return {
+      nodes: s.nodes.map((n) => ({ x: n.x, y: n.y, r: n.r, pair: n.pair, rgb: n.rgb })),
+      edges: s.edges.map((e) => [e.a, e.b]),
+      pairs: [...byPair.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v),
+    };
+  });
+  const base = path.basename(fixturePath);
+  // Hand-rolled rather than JSON.stringify: at indent 1 every dot becomes ten
+  // lines, which makes a re-freeze an unreadable diff.  One line per dot keeps
+  // the reviewable part reviewable.
+  const n2 = (v) => String(Number.isInteger(v) ? v : Math.round(v * 100) / 100);
+  const rows = (items) => items.map((s) => ` ${s}`).join(",\n");
+  const auto =
+    `${base.replace(".json", "")} — what e2e/screenshots/${base.replace(".json", ".png")} ` +
+    `must produce. Frozen by \`FREEZE=1 node e2e/smoke.mjs\`.`;
+  const old = existsSync(fixturePath) ? JSON.parse(readFileSync(fixturePath, "utf8")) : null;
+  writeFileSync(
+    fixturePath,
+    [
+      "{",
+      ` "label": ${JSON.stringify(old?.label ?? auto)},`,
+      ' "dots": [',
+      rows(
+        p.nodes.map(
+          (d) =>
+            `  {"x": ${n2(d.x)}, "y": ${n2(d.y)}, "r": ${n2(d.r)}, ` +
+            `"pair": ${d.pair ?? "null"}, "rgb": ${d.rgb ? `[${d.rgb.join(", ")}]` : "null"}}`,
+        ),
+      ),
+      " ],",
+      ' "edges": [',
+      rows(p.edges.map(([a, b]) => `  [${a}, ${b}]`)),
+      " ],",
+      ' "pairs": [',
+      rows(p.pairs.map(([a, b]) => `  [${a}, ${b}]`)),
+      " ]",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  console.log(`froze ${base}: ${p.nodes.length} dots / ${p.edges.length} edges / ${p.pairs.length} colours`);
+}
 
 await page.screenshot({ path: path.join(outDir, "1-detected.png") });
 
