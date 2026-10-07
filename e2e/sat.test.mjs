@@ -2,7 +2,7 @@
  * The SAT engine against the two boards that motivated it: board 2 is the
  * triangle lattice the DFS search cannot finish at all.
  *
- * Run with: node --experimental-strip-types --import ./e2e/ts-register.mjs e2e/sat.test.mjs
+ * Run with: node --experimental-strip-types --import ./scripts/ts-register.mjs e2e/sat.test.mjs
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

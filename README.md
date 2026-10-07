@@ -98,8 +98,9 @@ moves.
 npm install
 npm run dev        # dev server
 npm run build      # type-check and build to dist/
-npm run test:unit  # solver, vision and SAT unit tests
+npm run test:unit  # solver, vision, SAT and generator unit tests
 npm test           # the above, plus the browser smoke test
+npm run generate   # make a board that is solvable (and, by default, unique)
 ```
 
 `npm test` drives the built app in a headless browser over every screenshot in
@@ -116,6 +117,27 @@ FREEZE=1 node e2e/smoke.mjs <url> e2e/screenshots/board1-square96.png
 
 Positions are compared after normalising to the bounding box, with a two-unit
 tolerance: the same board at another `MAX_SIDE` is still the same board.
+
+### Generating boards
+
+```bash
+npm run generate -- -w 9 -h 9 -k 5 -s 42 -o board.json
+```
+
+Making a *solvable* board is the easy half: cover the lattice with one Hamiltonian
+path (a snake, randomised by backbiting), cut it into k pieces, keep the endpoints.
+The pieces are themselves a solution, so the board cannot come out broken.
+
+Making it *unique* is the hard half, and nobody gets it for free: a random cut is
+unique 6 times in 30 at 5x5, and essentially never above that. Re-rolling is
+hopeless — 7x7 needs ~24 rolls on average. So the generator asks the solver for two
+answers, finds a colour whose path differs between them, and splits it there: one
+new pair exactly where the alternative routing slipped through. That converges —
+7x7 in ~8 splits, 9x9 in ~14 — where retrying does not.
+
+The cost is colour count: enforcement pushes a 7x7 from 5 pairs to about 13, where
+a hand-designed board would use 8–10. Trading "move an endpoint" against "add a
+colour" is the obvious next improvement.
 
 Everything above needs only Node. Regenerating the SAT engine is the one thing that
 needs Rust — the built wasm is committed as `src/sat.wasm.ts`, so nobody else has to:
